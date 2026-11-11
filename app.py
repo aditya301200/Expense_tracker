@@ -17,26 +17,23 @@ st.set_page_config(
     page_title="Das Family Expense & Loan Tracker",
     page_icon="💰",
     layout="wide",
-    initial_sidebar_state="collapsed"  # Collapsed by default for clean mobile view
+    initial_sidebar_state="collapsed"
 )
 
 # Custom CSS optimized for Samsung Galaxy S25+ & Mobile Touchscreens
 st.markdown("""
 <style>
-    /* Reduce top/side wasted padding on mobile screens */
     .block-container {
         padding-top: 1.5rem !important;
         padding-bottom: 2.5rem !important;
         padding-left: 0.8rem !important;
         padding-right: 0.8rem !important;
     }
-    /* Larger, thumb-friendly buttons on mobile */
     .stButton > button, .stFormSubmitButton > button {
         min-height: 48px !important;
         font-weight: 600 !important;
         border-radius: 10px !important;
     }
-    /* Compact KPI Metric cards with subtle borders */
     div[data-testid="stMetric"] {
         background-color: rgba(128, 128, 128, 0.08);
         border: 1px solid rgba(128, 128, 128, 0.2);
@@ -46,7 +43,6 @@ st.markdown("""
     div[data-testid="stMetricValue"] {
         font-size: 1.35rem !important;
     }
-    /* Make tabs easier to tap and scroll horizontally on mobile */
     button[data-baseweb="tab"] {
         font-size: 0.95rem !important;
         padding: 10px 14px !important;
@@ -54,7 +50,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Plotly config: hides floating toolbar so scrolling on phone never gets stuck
 PLOTLY_MOBILE_CONFIG = {"displayModeBar": False, "responsive": True}
 
 # ==========================================
@@ -164,6 +159,26 @@ def add_transaction(t_date, t_type, category, sub_category, member, amount, pend
             INSERT INTO transactions (t_date, t_type, category, sub_category, member, amount, pending_loan, details)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (str(t_date), t_type, category, sub_category, member, amount, pending_loan, details))
+    conn.commit()
+    c.close()
+    conn.close()
+
+def bulk_add_transactions(records_list):
+    """Inserts multiple cloned records in a single database commit."""
+    if not records_list:
+        return
+    conn = get_connection()
+    c = conn.cursor()
+    if USE_POSTGRES:
+        c.executemany("""
+            INSERT INTO transactions (t_date, t_type, category, sub_category, member, amount, pending_loan, details)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, records_list)
+    else:
+        c.executemany("""
+            INSERT INTO transactions (t_date, t_type, category, sub_category, member, amount, pending_loan, details)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, [(str(r[0]), r[1], r[2], r[3], r[4], r[5], r[6], r[7]) for r in records_list])
     conn.commit()
     c.close()
     conn.close()
@@ -422,12 +437,28 @@ def render_modify_ui(target_df, key_prefix):
 # Load data
 df = load_data()
 
+if not df.empty:
+    df["t_date"] = pd.to_datetime(df["t_date"])
+    df["amount"] = df["amount"].astype(float)
+    df["pending_loan"] = df["pending_loan"].fillna(0.0).astype(float)
+    df["sub_category"] = df["sub_category"].fillna("General")
+    df["Month_Key"] = df["t_date"].dt.strftime("%Y-%m")
+    df["Month_Label"] = df["t_date"].dt.strftime("%B %Y (%Y-%m)")
+    df["Record_Label"] = (
+        "#" + df["id"].astype(str) + " | " +
+        df["t_date"].dt.strftime("%Y-%m-%d") + " | " +
+        df["sub_category"] + " | ₹" +
+        df["amount"].map("{:,.0f}".format) +
+        df["pending_loan"].apply(lambda x: f" (Loan: ₹{x:,.0f})" if x > 0 else "") +
+        " • " + df["member"]
+    )
+
 # ==========================================
-# 5. HEADER & MOBILE-FIRST "ADD ENTRY" FORM
+# 5. HEADER, ADD ENTRY & CLONE LAST MONTH
 # ==========================================
 st.markdown("### 💰 Das Family Expense & Loan Tracker")
 
-# Top Main-Screen Entry Expander (Easy 1-Thumb Access on Samsung S25+)
+# 5A. Top Main-Screen Entry Expander (Easy 1-Thumb Access on Samsung S25+)
 with st.expander("➕ Add New Expense / Income / Loan (Tap Here)", expanded=df.empty):
     top_col1, top_col2, top_col3 = st.columns(3)
     with top_col1:
@@ -461,7 +492,6 @@ with st.expander("➕ Add New Expense / Income / Loan (Tap Here)", expanded=df.e
 
         a_col1, a_col2 = st.columns(2)
         with a_col1:
-            # value=None makes the field completely blank when tapped (no '0.00' to delete!)
             amount = st.number_input(
                 "Monthly Paid / EMI / Income Amount (₹)",
                 min_value=0.0,
@@ -519,28 +549,102 @@ with st.expander("➕ Add New Expense / Income / Loan (Tap Here)", expanded=df.e
                 st.toast(f"Deleted entry #{int(latest_row['id'])}!", icon="🗑️")
                 st.rerun()
 
+# 5B. Auto-Fetch / Copy Previous Month's Expenses to Current Month
+if not df.empty:
+    with st.expander("🔄 Copy / Auto-Fetch Last Month's Expenses to New Month", expanded=False):
+        st.caption(
+            "Automatically fetch your fixed monthly expenses, loans, and salaries from a previous month. "
+            "You can uncheck items or edit any amount right in the table below before importing!"
+        )
+        avail_months = df.sort_values("Month_Key", ascending=False)["Month_Label"].unique()
+
+        cl_col1, cl_col2, cl_col3 = st.columns(3)
+        with cl_col1:
+            source_month = st.selectbox("1️⃣ Copy From Month", avail_months, key="clone_src_month")
+        with cl_col2:
+            target_date = st.date_input("2️⃣ New Month Date", date.today(), key="clone_target_date")
+        with cl_col3:
+            clone_filter = st.radio(
+                "3️⃣ What to Fetch?",
+                ["Only Expenses & Loans", "Both Expenses & Income"],
+                horizontal=True,
+                key="clone_type_filter"
+            )
+
+        src_df = df[df["Month_Label"] == source_month].copy()
+        if clone_filter == "Only Expenses & Loans":
+            src_df = src_df[src_df["t_type"] == "Expense"]
+
+        if src_df.empty:
+            st.warning("No matching entries found in the selected source month.")
+        else:
+            # Sort cleanly for the editable preview table
+            src_df = src_df.sort_values("id", ascending=True)
+            preview_df = pd.DataFrame({
+                "Copy": True,
+                "Type": src_df["t_type"],
+                "Category": src_df["category"],
+                "Sub-category": src_df["sub_category"],
+                "Member": src_df["member"],
+                "Amount (₹)": src_df["amount"],
+                "Pending Loan (₹)": src_df["pending_loan"],
+                "Details": src_df["details"].fillna("")
+            })
+
+            edited_clone_df = st.data_editor(
+                preview_df,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Copy": st.column_config.CheckboxColumn("Copy?", default=True),
+                    "Type": st.column_config.TextColumn("Type", disabled=True),
+                    "Category": st.column_config.TextColumn("Category", disabled=True),
+                    "Sub-category": st.column_config.TextColumn("Sub-category"),
+                    "Member": st.column_config.SelectboxColumn("Member", options=EXPENSE_MEMBERS + ["Other"]),
+                    "Amount (₹)": st.column_config.NumberColumn("Amount (₹)", min_value=0.0, format="%.2f"),
+                    "Pending Loan (₹)": st.column_config.NumberColumn("Pending Loan (₹)", min_value=0.0, format="%.2f"),
+                    "Details": st.column_config.TextColumn("Details")
+                },
+                key="clone_editor_table"
+            )
+
+            selected_rows = edited_clone_df[edited_clone_df["Copy"] == True]
+            st.caption(
+                f"✅ **{len(selected_rows)} entries selected** | "
+                f"Total Expense: **₹{selected_rows[selected_rows['Type'] == 'Expense']['Amount (₹)'].sum():,.2f}** | "
+                f"Total Pending Loan: **₹{selected_rows['Pending Loan (₹)'].sum():,.2f}**"
+            )
+
+            if st.button(
+                f"🚀 Import {len(selected_rows)} Checked Entries to {target_date.strftime('%B %Y')}",
+                type="primary",
+                use_container_width=True
+            ):
+                if selected_rows.empty:
+                    st.warning("⚠️ Please keep at least one row checked to import.")
+                else:
+                    records_to_insert = []
+                    for _, row in selected_rows.iterrows():
+                        records_to_insert.append((
+                            target_date,
+                            str(row["Type"]),
+                            str(row["Category"]),
+                            str(row["Sub-category"]).strip(),
+                            str(row["Member"]),
+                            float(row["Amount (₹)"] or 0.0),
+                            float(row["Pending Loan (₹)"] or 0.0),
+                            str(row["Details"] or "").strip()
+                        ))
+                    bulk_add_transactions(records_to_insert)
+                    st.toast(f"🎉 Imported {len(records_to_insert)} entries into {target_date.strftime('%B %Y')}!", icon="✅")
+                    st.rerun()
+
 # ==========================================
 # 6. MAIN DASHBOARD
 # ==========================================
 if df.empty:
     st.info("👋 Tap **➕ Add New Expense / Income / Loan** above to save your first entry!")
 else:
-    # Data preprocessing
-    df["t_date"] = pd.to_datetime(df["t_date"])
-    df["amount"] = df["amount"].astype(float)
-    df["pending_loan"] = df["pending_loan"].fillna(0.0).astype(float)
-    df["sub_category"] = df["sub_category"].fillna("General")
-    df["Month_Key"] = df["t_date"].dt.strftime("%Y-%m")
-    df["Month_Label"] = df["t_date"].dt.strftime("%B %Y (%Y-%m)")
-    df["Record_Label"] = (
-        "#" + df["id"].astype(str) + " | " +
-        df["t_date"].dt.strftime("%Y-%m-%d") + " | " +
-        df["sub_category"] + " | ₹" +
-        df["amount"].map("{:,.0f}".format) +
-        df["pending_loan"].apply(lambda x: f" (Loan: ₹{x:,.0f})" if x > 0 else "") +
-        " • " + df["member"]
-    )
-
     # Navigation Tabs (Shortened labels so all 4 fit cleanly on Samsung S25+ screen)
     tab_monthly, tab_loans, tab_trends, tab_records = st.tabs([
         "📅 Monthly",
