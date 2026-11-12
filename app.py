@@ -2,6 +2,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 import sqlite3
+import re
 from datetime import date, datetime, timedelta
 import plotly.express as px
 
@@ -54,7 +55,7 @@ PLOTLY_MOBILE_CONFIG = {"displayModeBar": False, "responsive": True}
 RECYCLE_BIN_RETENTION_DAYS = 3
 
 # ==========================================
-# 2. INDIAN CURRENCY & WORDS FORMATTERS
+# 2. INDIAN CURRENCY, PARSER & WORDS FORMATTERS
 # ==========================================
 def format_inr(val, decimals=0):
     """Formats numbers in Indian Standard (e.g., ₹12,26,956 or ₹3,18,885.00)."""
@@ -87,6 +88,22 @@ def format_inr(val, decimals=0):
 
     sign = "-" if is_neg else ""
     return f"{sign}₹{formatted_int}{dec_str}"
+
+
+def clean_currency_value(val):
+    """Cleans Excel strings like '₹ 3,18,885.00' or '₹79,489' into a float (318885.0)."""
+    if val is None or pd.isna(val):
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip()
+    if not s or s.lower() in ("nan", "none", "-", "nil", "null"):
+        return 0.0
+    cleaned = re.sub(r"[^\d.-]", "", s)
+    try:
+        return float(cleaned) if cleaned else 0.0
+    except ValueError:
+        return 0.0
 
 
 def number_to_indian_words(val):
@@ -122,11 +139,7 @@ def number_to_indian_words(val):
 
 
 def inject_live_indian_words_js():
-    """
-    Injects a lightweight keystroke listener into the popup modal so that as the user types
-    inside any Amount or Pending Loan number input on their phone, the Indian words
-    (e.g., '₹3,18,885 — 3 Lakh 18 Thousand 8 Hundred 85') update live on every digit!
-    """
+    """Injects a keystroke listener into the popup modal for live Indian words under number inputs."""
     components.html(
         """
         <script>
@@ -327,7 +340,6 @@ def init_db_once():
             c.execute("ALTER TABLE transactions ADD COLUMN deleted_at TEXT DEFAULT NULL")
     conn.commit()
     c.close()
-    # Auto-purge items older than 3 days on boot
     purge_expired_recycle_bin(conn)
     if not USE_POSTGRES:
         conn.close()
@@ -473,7 +485,6 @@ def update_transaction(t_id, t_date, t_type, category, sub_category, member, amo
     clear_all_caches()
 
 def soft_delete_transactions(t_ids):
-    """Moves selected transaction IDs to the Recycle Bin (auto-cleared after 3 days)."""
     if not t_ids:
         return
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -491,7 +502,6 @@ def soft_delete_transactions(t_ids):
     clear_all_caches()
 
 def restore_transactions(t_ids):
-    """Restores items from the Recycle Bin back to the active dashboard."""
     if not t_ids:
         return
     conn = get_connection()
@@ -508,7 +518,6 @@ def restore_transactions(t_ids):
     clear_all_caches()
 
 def permanent_delete_transactions(t_ids):
-    """Permanently deletes specified IDs from the Recycle Bin."""
     if not t_ids:
         return
     conn = get_connection()
@@ -525,7 +534,7 @@ def permanent_delete_transactions(t_ids):
     clear_all_caches()
 
 # ==========================================
-# 5. CONSTANTS & CATEGORIES
+# 5. CONSTANTS, CATEGORIES & AUTO-MAPPER
 # ==========================================
 EARNING_MEMBERS = ["Amal Das", "Abhijit Das", "Aditya Das", "Other"]
 EXPENSE_MEMBERS = ["Amal Das", "Abhijit Das", "Aditya Das", "Shared / Family"]
@@ -547,6 +556,35 @@ INCOME_CATEGORY_MAP = {
     "Business & Freelance": ["Business / Freelance", "Rental / Side Income"],
     "Investment Returns": ["Interest / Dividends", "Mutual Fund / Maturity", "Other Income"]
 }
+
+def infer_parent_category(sub_cat_name, t_type="Expense"):
+    """Automatically maps a Sub-category from Excel (like 'HDFC CC bill' or 'Gold Loan') to its Parent Category."""
+    s_clean = str(sub_cat_name or "").strip().lower()
+    target_map = EXPENSE_CATEGORY_MAP if t_type == "Expense" else INCOME_CATEGORY_MAP
+
+    for parent_cat, subs in target_map.items():
+        for sub in subs:
+            if sub.lower() == s_clean:
+                return parent_cat
+
+    if "loan" in s_clean or "emi" in s_clean:
+        return "Loans & EMIs"
+    if "cc" in s_clean or "card" in s_clean:
+        return "Credit Card Bills"
+    if "bill" in s_clean or "light" in s_clean or "gas" in s_clean or "recharge" in s_clean:
+        return "Utilities & Bills"
+    if "lic" in s_clean or "mutual" in s_clean or "sip" in s_clean or "insurance" in s_clean:
+        return "Insurance & Investments"
+    if "grocer" in s_clean or "food" in s_clean or "veg" in s_clean:
+        return "Groceries & Food"
+    if "rent" in s_clean or "home" in s_clean or "house" in s_clean:
+        return "Housing & Rent"
+    if "med" in s_clean or "doctor" in s_clean:
+        return "Medical & Healthcare"
+    if "fuel" in s_clean or "petrol" in s_clean or "oil" in s_clean:
+        return "Transport & Fuel"
+
+    return "Shopping & Miscellaneous" if t_type == "Expense" else "Salary & Regular Income"
 
 df = load_data()
 bin_df = load_recycle_bin()
@@ -593,7 +631,6 @@ def open_add_modal():
             placeholder="Tap to type amount (e.g., 1500)", step=100.0,
             key="add_amount_input"
         )
-        # Fallback Python caption if user presses Enter/Tab
         if amount and amount > 0:
             st.caption(f"🇮🇳 **{format_inr(amount)}** — *{number_to_indian_words(amount)}*")
 
@@ -613,7 +650,6 @@ def open_add_modal():
 
     details = st.text_input("Details / Notes (Optional)", placeholder="e.g., Monthly bill or EMI")
 
-    # Inject live keystroke-by-keystroke Indian words converter below the number inputs
     inject_live_indian_words_js()
 
     if st.button("💾 Save Entry", type="primary", use_container_width=True):
@@ -632,6 +668,206 @@ def open_add_modal():
             )
             st.toast(f"✅ Saved {final_sub}: {format_inr(clean_amount, 2)}", icon="💰")
             st.rerun()
+
+
+@st.dialog("📥 Import Previous Data from Excel / CSV", width="large")
+def open_excel_import_modal():
+    st.caption(
+        "Upload your `.xlsx`, `.xls`, or `.csv` file. The app automatically cleans `'₹ 3,18,885.00'` formatting, "
+        "skips Total summary rows, and lets you preview/edit everything before saving!"
+    )
+    uploaded_file = st.file_uploader("Select your Excel or CSV file", type=["xlsx", "xls", "csv"])
+
+    if uploaded_file is not None:
+        try:
+            if uploaded_file.name.lower().endswith(".csv"):
+                raw_excel_df = pd.read_csv(uploaded_file)
+            else:
+                xl = pd.ExcelFile(uploaded_file)
+                if len(xl.sheet_names) > 1:
+                    selected_sheet = st.selectbox("📑 Select Excel Sheet Tab", xl.sheet_names)
+                else:
+                    selected_sheet = xl.sheet_names[0]
+                raw_excel_df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
+        except Exception as e:
+            st.error(f"❌ Could not read file: {e}")
+            return
+
+        if raw_excel_df.empty:
+            st.warning("The selected sheet is empty.")
+            return
+
+        cols = list(raw_excel_df.columns)
+        none_opt = ["(None / Use Default)"]
+
+        def guess_col(keywords, include_none=False):
+            options = (none_opt + cols) if include_none else cols
+            for c in cols:
+                c_low = str(c).lower()
+                if any(k in c_low for k in keywords):
+                    return options.index(c)
+            return 0
+
+        st.markdown("##### 1️⃣ Map Your Excel Columns")
+        m_c1, m_c2, m_c3 = st.columns(3)
+        with m_c1:
+            sub_col = st.selectbox(
+                "Sub-category Column *",
+                cols,
+                index=guess_col(["sub-catego", "sub_catego", "sub", "item", "particular", "expense", "category"])
+            )
+        with m_c2:
+            amt_col = st.selectbox(
+                "Amount / Paid Column",
+                none_opt + cols,
+                index=guess_col(["amount", "paid", "emi", "cost", "value", "expense"], include_none=True)
+            )
+        with m_c3:
+            loan_col = st.selectbox(
+                "Pending Loan Column",
+                none_opt + cols,
+                index=guess_col(["pending", "loan", "balance"], include_none=True)
+            )
+
+        m_c4, m_c5, m_c6 = st.columns(3)
+        with m_c4:
+            date_col = st.selectbox(
+                "Date Column (if in Excel)",
+                none_opt + cols,
+                index=guess_col(["date", "month", "day"], include_none=True)
+            )
+        with m_c5:
+            member_col = st.selectbox(
+                "Member Column (if in Excel)",
+                none_opt + cols,
+                index=guess_col(["member", "name", "paid by", "person"], include_none=True)
+            )
+        with m_c6:
+            details_col = st.selectbox(
+                "Details / Notes Column",
+                none_opt + cols,
+                index=guess_col(["detail", "note", "remark", "desc"], include_none=True)
+            )
+
+        st.markdown("##### 2️⃣ Default Values (Used if Date or Member isn't in your Excel)")
+        d_c1, d_c2, d_c3 = st.columns(3)
+        with d_c1:
+            fallback_date = st.date_input("Default Month / Date for Imported Rows", date.today())
+        with d_c2:
+            fallback_member = st.selectbox("Default Family Member", EXPENSE_MEMBERS, index=2)  # Defaults to Aditya Das
+        with d_c3:
+            fallback_type = st.radio("Default Type", ["Expense", "Income"], horizontal=True)
+
+        # Parse and clean rows from Excel
+        parsed_rows = []
+        for _, r in raw_excel_df.iterrows():
+            raw_sub = r[sub_col] if sub_col in r else ""
+            if pd.isna(raw_sub):
+                continue
+            sub_str = str(raw_sub).strip()
+            # Skip empty rows or Excel 'Total' summary rows
+            if not sub_str or sub_str.lower() in ("nan", "none", "total", "grand total", "sub-category", "sub category"):
+                continue
+
+            amt_val = clean_currency_value(r[amt_col]) if amt_col != "(None / Use Default)" else 0.0
+            loan_val = clean_currency_value(r[loan_col]) if loan_col != "(None / Use Default)" else 0.0
+
+            # Skip rows where both Amount and Pending Loan are 0
+            if amt_val <= 0 and loan_val <= 0:
+                continue
+
+            # Parse date if available
+            row_date = fallback_date
+            if date_col != "(None / Use Default)" and pd.notna(r[date_col]):
+                try:
+                    row_date = pd.to_datetime(r[date_col]).date()
+                except Exception:
+                    row_date = fallback_date
+
+            # Parse member if available
+            row_member = fallback_member
+            if member_col != "(None / Use Default)" and pd.notna(r[member_col]):
+                m_str = str(r[member_col]).strip()
+                if m_str and m_str.lower() not in ("nan", "none"):
+                    row_member = m_str
+
+            # Parse details if available
+            row_details = "Imported from Excel"
+            if details_col != "(None / Use Default)" and pd.notna(r[details_col]):
+                d_str = str(r[details_col]).strip()
+                if d_str and d_str.lower() not in ("nan", "none"):
+                    row_details = d_str
+
+            parent_cat = infer_parent_category(sub_str, fallback_type)
+
+            parsed_rows.append({
+                "Import": True,
+                "Date": row_date,
+                "Type": fallback_type,
+                "Category": parent_cat,
+                "Sub-category": sub_str,
+                "Member": row_member,
+                "Amount (₹)": amt_val,
+                "Pending Loan (₹)": loan_val,
+                "Details": row_details
+            })
+
+        if not parsed_rows:
+            st.warning("⚠️ No valid rows with Amount > 0 or Pending Loan > 0 were found. Check your column mapping above.")
+            return
+
+        st.markdown("##### 3️⃣ Review & Edit Before Importing")
+        preview_import_df = pd.DataFrame(parsed_rows)
+        edited_import_df = st.data_editor(
+            preview_import_df,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Import": st.column_config.CheckboxColumn("Import?", default=True),
+                "Date": st.column_config.DateColumn("Date"),
+                "Type": st.column_config.SelectboxColumn("Type", options=["Expense", "Income"]),
+                "Category": st.column_config.SelectboxColumn(
+                    "Category",
+                    options=list(EXPENSE_CATEGORY_MAP.keys()) + list(INCOME_CATEGORY_MAP.keys())
+                ),
+                "Sub-category": st.column_config.TextColumn("Sub-category"),
+                "Member": st.column_config.SelectboxColumn("Member", options=EXPENSE_MEMBERS + ["Other"]),
+                "Amount (₹)": st.column_config.NumberColumn("Amount (₹)", min_value=0.0, format="%.2f"),
+                "Pending Loan (₹)": st.column_config.NumberColumn("Pending Loan (₹)", min_value=0.0, format="%.2f"),
+                "Details": st.column_config.TextColumn("Details")
+            }
+        )
+
+        to_import = edited_import_df[edited_import_df["Import"] == True]
+        imp_amt_total = to_import["Amount (₹)"].sum()
+        imp_loan_total = to_import["Pending Loan (₹)"].sum()
+
+        st.caption(
+            f"✅ **{len(to_import)} rows ready** | "
+            f"Total Amount: **{format_inr(imp_amt_total, 2)}** | "
+            f"Total Pending Loan: **{format_inr(imp_loan_total, 2)}**"
+        )
+
+        if st.button(f"🚀 Import {len(to_import)} Rows into Database", type="primary", use_container_width=True):
+            if to_import.empty:
+                st.warning("Please keep at least one row checked.")
+            else:
+                records_to_save = [
+                    (
+                        row["Date"],
+                        str(row["Type"]),
+                        str(row["Category"]),
+                        str(row["Sub-category"]).strip(),
+                        str(row["Member"]),
+                        float(row["Amount (₹)"] or 0.0),
+                        float(row["Pending Loan (₹)"] or 0.0),
+                        str(row["Details"] or "").strip()
+                    )
+                    for _, row in to_import.iterrows()
+                ]
+                bulk_add_transactions(records_to_save)
+                st.toast(f"🎉 Successfully imported {len(records_to_save)} rows from Excel!", icon="📥")
+                st.rerun()
 
 
 @st.dialog("⚠️ Confirm Undo Last Entry", width="small")
@@ -930,32 +1166,38 @@ def open_delete_modal(target_df, scope_label="Selected Month"):
 st.markdown("### 💰 Das Family Expense & Loan Tracker")
 
 bin_count = len(bin_df)
-bin_btn_label = f"🗑️ Recycle Bin ({bin_count})" if bin_count > 0 else "🗑️ Recycle Bin"
+bin_btn_label = f"🗑️ Bin ({bin_count})" if bin_count > 0 else "🗑️ Bin"
 
 if not df.empty:
-    btn_c1, btn_c2, btn_c3, btn_c4, btn_c5 = st.columns(5)
+    btn_c1, btn_c2, btn_c3, btn_c4, btn_c5, btn_c6 = st.columns(6)
     with btn_c1:
         if st.button("➕ Add Entry", type="primary", use_container_width=True):
             open_add_modal()
     with btn_c2:
-        if st.button("🔄 Copy Last Month", use_container_width=True):
-            open_copy_modal()
+        if st.button("📥 Import Excel", use_container_width=True):
+            open_excel_import_modal()
     with btn_c3:
-        if st.button("✏️ Modify Entry", use_container_width=True):
-            open_modify_modal(df)
+        if st.button("🔄 Copy Month", use_container_width=True):
+            open_copy_modal()
     with btn_c4:
-        latest_row = df.iloc[0]
-        if st.button(f"↩️ Undo Last (#{int(latest_row['id'])})", use_container_width=True):
-            open_undo_confirm_modal(latest_row)
+        if st.button("✏️ Modify", use_container_width=True):
+            open_modify_modal(df)
     with btn_c5:
+        latest_row = df.iloc[0]
+        if st.button(f"↩️ Undo (#{int(latest_row['id'])})", use_container_width=True):
+            open_undo_confirm_modal(latest_row)
+    with btn_c6:
         if st.button(bin_btn_label, use_container_width=True):
             open_recycle_bin_modal()
 else:
-    empty_c1, empty_c2 = st.columns([3, 1])
+    empty_c1, empty_c2, empty_c3 = st.columns([2, 2, 1])
     with empty_c1:
-        if st.button("➕ Add First Expense / Income / Loan", type="primary", use_container_width=True):
+        if st.button("➕ Add First Entry", type="primary", use_container_width=True):
             open_add_modal()
     with empty_c2:
+        if st.button("📥 Import Previous Data from Excel", use_container_width=True):
+            open_excel_import_modal()
+    with empty_c3:
         if st.button(bin_btn_label, use_container_width=True):
             open_recycle_bin_modal()
 
@@ -963,7 +1205,7 @@ else:
 # 8. MAIN DASHBOARD (INDIAN NUMBER FORMAT)
 # ==========================================
 if df.empty:
-    st.info("👋 Tap **➕ Add First Expense / Income / Loan** above to open the popup form and save your first entry!")
+    st.info("👋 Tap **➕ Add First Entry** or **📥 Import Previous Data from Excel** above to get started!")
 else:
     tab_monthly, tab_loans, tab_trends, tab_records = st.tabs([
         "📅 Monthly", "🏦 Loans", "📈 Trends", "📋 History"
@@ -1172,7 +1414,7 @@ else:
         loan_all_df = df[df["pending_loan"] > 0]
 
         if loan_all_df.empty:
-            st.info("No Pending Loan balances entered yet. Tap '➕ Add Entry' above and fill in the 'Pending Loan Till Date (₹)' box.")
+            st.info("No Pending Loan balances entered yet. Tap '➕ Add Entry' or '📥 Import Excel' above.")
         else:
             loan_months = loan_all_df.sort_values("Month_Key", ascending=False)["Month_Label"].unique()
             sel_loan_month = st.selectbox("🗓️ Select Month", loan_months, key="loan_month_sel")
@@ -1264,14 +1506,17 @@ else:
     # TAB 4: ALL RECORDS, POPUP EDIT/DELETE & CSV EXPORT
     # ------------------------------------------
     with tab_records:
-        h_btn1, h_btn2, h_btn3 = st.columns(3)
+        h_btn1, h_btn2, h_btn3, h_btn4 = st.columns(4)
         with h_btn1:
-            if st.button("✏️ Modify Any Entry", use_container_width=True, key="btn_mod_all"):
-                open_modify_modal(df)
+            if st.button("📥 Import Excel", use_container_width=True, key="btn_imp_all"):
+                open_excel_import_modal()
         with h_btn2:
-            if st.button("🗑️ Move Entries to Bin", use_container_width=True, key="btn_del_all"):
-                open_delete_modal(df, scope_label="All Months")
+            if st.button("✏️ Modify Entry", use_container_width=True, key="btn_mod_all"):
+                open_modify_modal(df)
         with h_btn3:
+            if st.button("🗑️ Move to Bin", use_container_width=True, key="btn_del_all"):
+                open_delete_modal(df, scope_label="All Months")
+        with h_btn4:
             if st.button(bin_btn_label, use_container_width=True, key="btn_bin_all"):
                 open_recycle_bin_modal()
 
