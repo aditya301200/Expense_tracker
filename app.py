@@ -1,7 +1,8 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timedelta
 import plotly.express as px
 
 # Optional PostgreSQL import (used when DB_URL is configured)
@@ -50,9 +51,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 PLOTLY_MOBILE_CONFIG = {"displayModeBar": False, "responsive": True}
+RECYCLE_BIN_RETENTION_DAYS = 3
 
 # ==========================================
-# 2. INDIAN CURRENCY FORMATTER (LAKHS / CRORES)
+# 2. INDIAN CURRENCY & WORDS FORMATTERS
 # ==========================================
 def format_inr(val, decimals=0):
     """Formats numbers in Indian Standard (e.g., ₹12,26,956 or ₹3,18,885.00)."""
@@ -86,6 +88,124 @@ def format_inr(val, decimals=0):
     sign = "-" if is_neg else ""
     return f"{sign}₹{formatted_int}{dec_str}"
 
+
+def number_to_indian_words(val):
+    """Converts a numeric rupee amount into compact Indian words (e.g., '3 Lakh 18 Thousand 8 Hundred 85')."""
+    if val is None or pd.isna(val) or float(val) <= 0:
+        return ""
+    n = int(round(float(val)))
+    if n == 0:
+        return ""
+
+    parts = []
+    crore = n // 10000000
+    n %= 10000000
+    lakh = n // 100000
+    n %= 100000
+    thousand = n // 1000
+    n %= 1000
+    hundred = n // 100
+    rem = n % 100
+
+    if crore > 0:
+        parts.append(f"{crore} Crore")
+    if lakh > 0:
+        parts.append(f"{lakh} Lakh")
+    if thousand > 0:
+        parts.append(f"{thousand} Thousand")
+    if hundred > 0:
+        parts.append(f"{hundred} Hundred")
+    if rem > 0:
+        parts.append(f"{rem}")
+
+    return " ".join(parts) + " Rupees"
+
+
+def inject_live_indian_words_js():
+    """
+    Injects a lightweight keystroke listener into the popup modal so that as the user types
+    inside any Amount or Pending Loan number input on their phone, the Indian words
+    (e.g., '₹3,18,885 — 3 Lakh 18 Thousand 8 Hundred 85') update live on every digit!
+    """
+    components.html(
+        """
+        <script>
+        (function() {
+            const parentDoc = window.parent.document;
+
+            function toIndianWords(num) {
+                if (isNaN(num) || num <= 0) return "";
+                let n = Math.floor(num);
+                if (n === 0) return "";
+                let parts = [];
+                let crore = Math.floor(n / 10000000);
+                n %= 10000000;
+                let lakh = Math.floor(n / 100000);
+                n %= 100000;
+                let thousand = Math.floor(n / 1000);
+                n %= 1000;
+                let hundred = Math.floor(n / 100);
+                let rem = n % 100;
+
+                if (crore > 0) parts.push(crore + " Crore");
+                if (lakh > 0) parts.push(lakh + " Lakh");
+                if (thousand > 0) parts.push(thousand + " Thousand");
+                if (hundred > 0) parts.push(hundred + " Hundred");
+                if (rem > 0) parts.push(rem);
+
+                let dec = Math.round((num - Math.floor(num)) * 100);
+                let res = parts.join(" ") + " Rupees";
+                if (dec > 0) res += " & " + dec + " Paise";
+                return res;
+            }
+
+            function formatINR(num) {
+                if (isNaN(num) || num <= 0) return "";
+                return "₹" + num.toLocaleString("en-IN", {maximumFractionDigits: 2});
+            }
+
+            function attachListeners() {
+                const numInputs = parentDoc.querySelectorAll('div[data-testid="stNumberInput"] input');
+                numInputs.forEach((input) => {
+                    if (input.dataset.indianWordsAttached === "true") return;
+                    input.dataset.indianWordsAttached = "true";
+
+                    const wrapper = input.closest('div[data-testid="stNumberInput"]');
+                    if (!wrapper) return;
+
+                    let helper = wrapper.querySelector('.live-inr-words');
+                    if (!helper) {
+                        helper = parentDoc.createElement('div');
+                        helper.className = 'live-inr-words';
+                        helper.style.cssText = 'color: #2ecc71; font-size: 0.84rem; font-weight: 600; margin-top: 4px; min-height: 1.2rem; transition: all 0.1s ease;';
+                        wrapper.appendChild(helper);
+                    }
+
+                    const updateText = () => {
+                        const raw = parseFloat(input.value);
+                        if (!isNaN(raw) && raw > 0) {
+                            helper.textContent = "🇮🇳 " + formatINR(raw) + " — " + toIndianWords(raw);
+                        } else {
+                            helper.textContent = "";
+                        }
+                    };
+
+                    input.addEventListener('input', updateText);
+                    input.addEventListener('change', updateText);
+                    updateText();
+                });
+            }
+
+            attachListeners();
+            const observer = new MutationObserver(attachListeners);
+            observer.observe(parentDoc.body, { childList: true, subtree: true });
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
 # ==========================================
 # 3. SIMPLE FAMILY PIN AUTHENTICATION
 # ==========================================
@@ -115,7 +235,7 @@ if not check_pin():
     st.stop()
 
 # ==========================================
-# 4. CACHED & POOLED DATABASE ENGINE
+# 4. CACHED DATABASE ENGINE + 3-DAY RECYCLE BIN
 # ==========================================
 USE_POSTGRES = has_secret("DB_URL")
 LOCAL_DB_NAME = "expenses.db"
@@ -136,6 +256,30 @@ def get_connection():
         return conn
     return sqlite3.connect(LOCAL_DB_NAME, check_same_thread=False)
 
+def purge_expired_recycle_bin(conn=None):
+    """Automatically clears Recycle Bin entries deleted more than 3 days ago."""
+    close_after = False
+    if conn is None:
+        conn = get_connection()
+        close_after = not USE_POSTGRES
+
+    cutoff_str = (datetime.now() - timedelta(days=RECYCLE_BIN_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    c = conn.cursor()
+    if USE_POSTGRES:
+        c.execute(
+            "DELETE FROM transactions WHERE deleted_at IS NOT NULL AND deleted_at <> '' AND deleted_at < %s",
+            (cutoff_str,)
+        )
+    else:
+        c.execute(
+            "DELETE FROM transactions WHERE deleted_at IS NOT NULL AND deleted_at <> '' AND deleted_at < ?",
+            (cutoff_str,)
+        )
+    conn.commit()
+    c.close()
+    if close_after:
+        conn.close()
+
 @st.cache_resource
 def init_db_once():
     conn = get_connection()
@@ -151,11 +295,13 @@ def init_db_once():
                 member TEXT NOT NULL,
                 amount NUMERIC(12, 2) NOT NULL,
                 pending_loan NUMERIC(12, 2) NOT NULL DEFAULT 0.0,
-                details TEXT
+                details TEXT,
+                deleted_at TEXT DEFAULT NULL
             )
         """)
         c.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS sub_category TEXT NOT NULL DEFAULT 'General'")
         c.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS pending_loan NUMERIC(12, 2) NOT NULL DEFAULT 0.0")
+        c.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS deleted_at TEXT DEFAULT NULL")
     else:
         c.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
@@ -167,7 +313,8 @@ def init_db_once():
                 member TEXT NOT NULL,
                 amount REAL NOT NULL,
                 pending_loan REAL NOT NULL DEFAULT 0.0,
-                details TEXT
+                details TEXT,
+                deleted_at TEXT DEFAULT NULL
             )
         """)
         c.execute("PRAGMA table_info(transactions)")
@@ -176,18 +323,26 @@ def init_db_once():
             c.execute("ALTER TABLE transactions ADD COLUMN sub_category TEXT NOT NULL DEFAULT 'General'")
         if "pending_loan" not in columns:
             c.execute("ALTER TABLE transactions ADD COLUMN pending_loan REAL NOT NULL DEFAULT 0.0")
+        if "deleted_at" not in columns:
+            c.execute("ALTER TABLE transactions ADD COLUMN deleted_at TEXT DEFAULT NULL")
     conn.commit()
     c.close()
+    # Auto-purge items older than 3 days on boot
+    purge_expired_recycle_bin(conn)
     if not USE_POSTGRES:
         conn.close()
     return True
 
 init_db_once()
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_data():
+    """Loads active (non-deleted) transactions."""
     conn = get_connection()
-    df = pd.read_sql_query("SELECT * FROM transactions ORDER BY t_date DESC, id DESC", conn)
+    df = pd.read_sql_query(
+        "SELECT * FROM transactions WHERE deleted_at IS NULL OR deleted_at = '' ORDER BY t_date DESC, id DESC",
+        conn
+    )
     if not USE_POSTGRES:
         conn.close()
 
@@ -209,24 +364,69 @@ def load_data():
         )
     return df
 
+@st.cache_data(ttl=300, show_spinner=False)
+def load_recycle_bin():
+    """Purges items > 3 days old and loads remaining Recycle Bin items."""
+    conn = get_connection()
+    purge_expired_recycle_bin(conn)
+    bin_df = pd.read_sql_query(
+        "SELECT * FROM transactions WHERE deleted_at IS NOT NULL AND deleted_at <> '' ORDER BY deleted_at DESC, id DESC",
+        conn
+    )
+    if not USE_POSTGRES:
+        conn.close()
+
+    if not bin_df.empty:
+        bin_df["t_date"] = pd.to_datetime(bin_df["t_date"])
+        bin_df["amount"] = bin_df["amount"].astype(float)
+        bin_df["pending_loan"] = bin_df["pending_loan"].fillna(0.0).astype(float)
+        bin_df["deleted_dt"] = pd.to_datetime(bin_df["deleted_at"])
+        now_dt = datetime.now()
+
+        def calc_expiry_label(del_dt):
+            expire_at = del_dt + timedelta(days=RECYCLE_BIN_RETENTION_DAYS)
+            rem = expire_at - now_dt
+            total_hours = int(max(rem.total_seconds(), 0) // 3600)
+            days_left = total_hours // 24
+            hrs_left = total_hours % 24
+            if days_left > 0:
+                return f"{days_left}d {hrs_left}h left"
+            return f"{hrs_left}h left"
+
+        bin_df["Auto_Clears_In"] = bin_df["deleted_dt"].apply(calc_expiry_label)
+        bin_df["Bin_Label"] = bin_df.apply(
+            lambda r: (
+                f"#{int(r['id'])} | {r['t_date'].strftime('%Y-%m-%d')} | "
+                f"{r['sub_category']} | {format_inr(r['amount'], 0)}"
+                + (f" (Loan: {format_inr(r['pending_loan'], 0)})" if r["pending_loan"] > 0 else "")
+                + f" • {r['member']} ⏳ [{r['Auto_Clears_In']}]"
+            ),
+            axis=1
+        )
+    return bin_df
+
+def clear_all_caches():
+    load_data.clear()
+    load_recycle_bin.clear()
+
 def add_transaction(t_date, t_type, category, sub_category, member, amount, pending_loan, details):
     conn = get_connection()
     c = conn.cursor()
     if USE_POSTGRES:
         c.execute("""
-            INSERT INTO transactions (t_date, t_type, category, sub_category, member, amount, pending_loan, details)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO transactions (t_date, t_type, category, sub_category, member, amount, pending_loan, details, deleted_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL)
         """, (t_date, t_type, category, sub_category, member, amount, pending_loan, details))
     else:
         c.execute("""
-            INSERT INTO transactions (t_date, t_type, category, sub_category, member, amount, pending_loan, details)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO transactions (t_date, t_type, category, sub_category, member, amount, pending_loan, details, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
         """, (str(t_date), t_type, category, sub_category, member, amount, pending_loan, details))
     conn.commit()
     c.close()
     if not USE_POSTGRES:
         conn.close()
-    load_data.clear()
+    clear_all_caches()
 
 def bulk_add_transactions(records_list):
     if not records_list:
@@ -235,19 +435,19 @@ def bulk_add_transactions(records_list):
     c = conn.cursor()
     if USE_POSTGRES:
         c.executemany("""
-            INSERT INTO transactions (t_date, t_type, category, sub_category, member, amount, pending_loan, details)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO transactions (t_date, t_type, category, sub_category, member, amount, pending_loan, details, deleted_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL)
         """, records_list)
     else:
         c.executemany("""
-            INSERT INTO transactions (t_date, t_type, category, sub_category, member, amount, pending_loan, details)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO transactions (t_date, t_type, category, sub_category, member, amount, pending_loan, details, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
         """, [(str(r[0]), r[1], r[2], r[3], r[4], r[5], r[6], r[7]) for r in records_list])
     conn.commit()
     c.close()
     if not USE_POSTGRES:
         conn.close()
-    load_data.clear()
+    clear_all_caches()
 
 def update_transaction(t_id, t_date, t_type, category, sub_category, member, amount, pending_loan, details):
     conn = get_connection()
@@ -270,9 +470,45 @@ def update_transaction(t_id, t_date, t_type, category, sub_category, member, amo
     c.close()
     if not USE_POSTGRES:
         conn.close()
-    load_data.clear()
+    clear_all_caches()
 
-def delete_transactions(t_ids):
+def soft_delete_transactions(t_ids):
+    """Moves selected transaction IDs to the Recycle Bin (auto-cleared after 3 days)."""
+    if not t_ids:
+        return
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_connection()
+    c = conn.cursor()
+    for t_id in t_ids:
+        if USE_POSTGRES:
+            c.execute("UPDATE transactions SET deleted_at = %s WHERE id = %s", (now_str, int(t_id)))
+        else:
+            c.execute("UPDATE transactions SET deleted_at = ? WHERE id = ?", (now_str, int(t_id)))
+    conn.commit()
+    c.close()
+    if not USE_POSTGRES:
+        conn.close()
+    clear_all_caches()
+
+def restore_transactions(t_ids):
+    """Restores items from the Recycle Bin back to the active dashboard."""
+    if not t_ids:
+        return
+    conn = get_connection()
+    c = conn.cursor()
+    for t_id in t_ids:
+        if USE_POSTGRES:
+            c.execute("UPDATE transactions SET deleted_at = NULL WHERE id = %s", (int(t_id),))
+        else:
+            c.execute("UPDATE transactions SET deleted_at = NULL WHERE id = ?", (int(t_id),))
+    conn.commit()
+    c.close()
+    if not USE_POSTGRES:
+        conn.close()
+    clear_all_caches()
+
+def permanent_delete_transactions(t_ids):
+    """Permanently deletes specified IDs from the Recycle Bin."""
     if not t_ids:
         return
     conn = get_connection()
@@ -286,7 +522,7 @@ def delete_transactions(t_ids):
     c.close()
     if not USE_POSTGRES:
         conn.close()
-    load_data.clear()
+    clear_all_caches()
 
 # ==========================================
 # 5. CONSTANTS & CATEGORIES
@@ -313,6 +549,7 @@ INCOME_CATEGORY_MAP = {
 }
 
 df = load_data()
+bin_df = load_recycle_bin()
 
 # ==========================================
 # 6. POPUP MODAL DIALOGS (@st.dialog)
@@ -339,52 +576,136 @@ def open_add_modal():
     if selected_sub == "➕ Custom Sub-category...":
         custom_sub = st.text_input("Enter Custom Sub-category", placeholder="e.g., Car Loan")
 
-    with st.form("modal_add_form", clear_on_submit=True):
-        f_col1, f_col2 = st.columns(2)
-        with f_col1:
-            t_date = st.date_input("Date", date.today())
-        with f_col2:
-            if t_type == "Expense":
-                member = st.selectbox("Paid By / Loan Holder", EXPENSE_MEMBERS)
-            else:
-                member = st.selectbox("Earning Family Member", EARNING_MEMBERS)
+    f_col1, f_col2 = st.columns(2)
+    with f_col1:
+        t_date = st.date_input("Date", date.today())
+    with f_col2:
+        if t_type == "Expense":
+            member = st.selectbox("Paid By / Loan Holder", EXPENSE_MEMBERS)
+        else:
+            member = st.selectbox("Earning Family Member", EARNING_MEMBERS)
 
-        a_col1, a_col2 = st.columns(2)
-        with a_col1:
-            amount = st.number_input(
-                "Monthly Paid / EMI / Income Amount (₹)",
+    a_col1, a_col2 = st.columns(2)
+    with a_col1:
+        amount = st.number_input(
+            "Monthly Paid / EMI / Income Amount (₹)",
+            min_value=0.0, value=None,
+            placeholder="Tap to type amount (e.g., 1500)", step=100.0,
+            key="add_amount_input"
+        )
+        # Fallback Python caption if user presses Enter/Tab
+        if amount and amount > 0:
+            st.caption(f"🇮🇳 **{format_inr(amount)}** — *{number_to_indian_words(amount)}*")
+
+    with a_col2:
+        if t_type == "Expense":
+            pending_loan = st.number_input(
+                "Pending Loan Till Date (₹) [Optional]",
                 min_value=0.0, value=None,
-                placeholder="Tap to type amount (e.g., 1500)", step=100.0
+                placeholder="Tap if Loan (e.g., 318885)", step=500.0,
+                key="add_loan_input"
             )
-        with a_col2:
-            if t_type == "Expense":
-                pending_loan = st.number_input(
-                    "Pending Loan Till Date (₹) [Optional]",
-                    min_value=0.0, value=None,
-                    placeholder="Tap if Loan (e.g., 79489)", step=500.0
-                )
-            else:
-                pending_loan = None
-                st.caption("ℹ️ Pending Loan is only used for Expense / Loan entries.")
+            if pending_loan and pending_loan > 0:
+                st.caption(f"🇮🇳 **{format_inr(pending_loan)}** — *{number_to_indian_words(pending_loan)}*")
+        else:
+            pending_loan = None
+            st.caption("ℹ️ Pending Loan is only used for Expense / Loan entries.")
 
-        details = st.text_input("Details / Notes (Optional)", placeholder="e.g., Monthly bill or EMI")
+    details = st.text_input("Details / Notes (Optional)", placeholder="e.g., Monthly bill or EMI")
 
-        if st.form_submit_button("💾 Save Entry", type="primary", use_container_width=True):
-            clean_amount = float(amount) if amount is not None else 0.0
-            clean_loan = float(pending_loan) if pending_loan is not None else 0.0
-            final_sub = custom_sub.strip() if selected_sub == "➕ Custom Sub-category..." else selected_sub
+    # Inject live keystroke-by-keystroke Indian words converter below the number inputs
+    inject_live_indian_words_js()
 
-            if not final_sub:
-                st.error("⚠️ Please enter a valid sub-category name.")
-            elif clean_amount <= 0 and clean_loan <= 0:
-                st.error("⚠️ Please enter an Amount or Pending Loan greater than ₹0.")
-            else:
-                add_transaction(
-                    t_date, t_type, category, final_sub, member,
-                    clean_amount, clean_loan, details.strip()
-                )
-                st.toast(f"✅ Saved {final_sub}: {format_inr(clean_amount, 2)}", icon="💰")
+    if st.button("💾 Save Entry", type="primary", use_container_width=True):
+        clean_amount = float(amount) if amount is not None else 0.0
+        clean_loan = float(pending_loan) if pending_loan is not None else 0.0
+        final_sub = custom_sub.strip() if selected_sub == "➕ Custom Sub-category..." else selected_sub
+
+        if not final_sub:
+            st.error("⚠️ Please enter a valid sub-category name.")
+        elif clean_amount <= 0 and clean_loan <= 0:
+            st.error("⚠️ Please enter an Amount or Pending Loan greater than ₹0.")
+        else:
+            add_transaction(
+                t_date, t_type, category, final_sub, member,
+                clean_amount, clean_loan, details.strip()
+            )
+            st.toast(f"✅ Saved {final_sub}: {format_inr(clean_amount, 2)}", icon="💰")
+            st.rerun()
+
+
+@st.dialog("⚠️ Confirm Undo Last Entry", width="small")
+def open_undo_confirm_modal(latest_row):
+    st.warning("Are you sure you want to undo and move this latest entry to the Recycle Bin?")
+    amt_val = float(latest_row["amount"])
+    loan_val = float(latest_row.get("pending_loan", 0.0) or 0.0)
+
+    st.markdown(f"""
+    * **Entry ID:** `#{int(latest_row['id'])}`
+    * **Date:** `{latest_row['t_date'].strftime('%Y-%m-%d')}`
+    * **Type & Sub-category:** `{latest_row['t_type']}` → **{latest_row['sub_category']}**
+    * **Member:** `{latest_row['member']}`
+    * **Amount:** **{format_inr(amt_val, 2)}** *({number_to_indian_words(amt_val) or '₹0'})*
+    """ + (f"* **Pending Loan:** **{format_inr(loan_val, 2)}** *({number_to_indian_words(loan_val)})*" if loan_val > 0 else ""))
+
+    st.caption(f"ℹ️ You can restore this item from the 🗑️ Recycle Bin within {RECYCLE_BIN_RETENTION_DAYS} days.")
+
+    c_yes, c_no = st.columns(2)
+    with c_yes:
+        if st.button("🗑️ Yes, Move to Bin", type="primary", use_container_width=True):
+            soft_delete_transactions([int(latest_row["id"])])
+            st.toast(f"Moved entry #{int(latest_row['id'])} to Recycle Bin!", icon="🗑️")
+            st.rerun()
+    with c_no:
+        if st.button("❌ Cancel", use_container_width=True):
+            st.rerun()
+
+
+@st.dialog("🗑️ Recycle Bin (Auto-Clears Every 3 Days)", width="large")
+def open_recycle_bin_modal():
+    st.caption(
+        f"Deleted entries are safely kept here for **{RECYCLE_BIN_RETENTION_DAYS} days** before being permanently erased."
+    )
+    current_bin = load_recycle_bin()
+
+    if current_bin.empty:
+        st.info("✨ Your Recycle Bin is completely empty.")
+        return
+
+    bin_map = dict(zip(current_bin["Bin_Label"], current_bin["id"]))
+    selected_bin_labels = st.multiselect(
+        "Select entries to Restore or Permanently Delete:",
+        options=list(bin_map.keys()),
+        default=list(bin_map.keys())
+    )
+
+    b_col1, b_col2 = st.columns(2)
+    with b_col1:
+        if st.button("♻️ Restore Selected", type="primary", use_container_width=True):
+            if selected_bin_labels:
+                ids_to_restore = [bin_map[lbl] for lbl in selected_bin_labels]
+                restore_transactions(ids_to_restore)
+                st.toast(f"♻️ Restored {len(ids_to_restore)} entry(s) to dashboard!", icon="✅")
                 st.rerun()
+            else:
+                st.warning("Select at least one entry above.")
+    with b_col2:
+        if st.button("🔥 Delete Forever", use_container_width=True):
+            if selected_bin_labels:
+                ids_to_purge = [bin_map[lbl] for lbl in selected_bin_labels]
+                permanent_delete_transactions(ids_to_purge)
+                st.toast(f"🔥 Permanently deleted {len(ids_to_purge)} entry(s)!", icon="🗑️")
+                st.rerun()
+            else:
+                st.warning("Select at least one entry above.")
+
+    st.divider()
+    disp_bin = current_bin[["id", "t_date", "sub_category", "member", "amount", "pending_loan", "Auto_Clears_In"]].copy()
+    disp_bin["t_date"] = disp_bin["t_date"].dt.strftime("%Y-%m-%d")
+    disp_bin["amount"] = disp_bin["amount"].apply(format_inr)
+    disp_bin["pending_loan"] = disp_bin["pending_loan"].apply(format_inr)
+    disp_bin.columns = ["ID", "Date", "Sub-category", "Member", "Amount", "Pending Loan", "Expires In"]
+    st.dataframe(disp_bin, use_container_width=True, hide_index=True)
 
 
 @st.dialog("🔄 Copy / Auto-Fetch Last Month's Data", width="large")
@@ -525,69 +846,80 @@ def open_modify_modal(target_df):
             "Enter Custom Sub-category", value=current_sub, key=f"mod_cust_sub_{rec_id}"
         )
 
-    with st.form(f"modal_edit_form_{rec_id}"):
-        fc1, fc2 = st.columns(2)
-        with fc1:
-            edit_date = st.date_input("Date", value=rec_row["t_date"].date())
-        with fc2:
-            mem_list = list(EXPENSE_MEMBERS if edit_type == "Expense" else EARNING_MEMBERS)
-            if rec_row["member"] not in mem_list:
-                mem_list.insert(0, rec_row["member"])
-            edit_member = st.selectbox("Member", mem_list, index=mem_list.index(rec_row["member"]))
+    fc1, fc2 = st.columns(2)
+    with fc1:
+        edit_date = st.date_input("Date", value=rec_row["t_date"].date(), key=f"mod_date_{rec_id}")
+    with fc2:
+        mem_list = list(EXPENSE_MEMBERS if edit_type == "Expense" else EARNING_MEMBERS)
+        if rec_row["member"] not in mem_list:
+            mem_list.insert(0, rec_row["member"])
+        edit_member = st.selectbox(
+            "Member", mem_list, index=mem_list.index(rec_row["member"]), key=f"mod_mem_{rec_id}"
+        )
 
-        fc3, fc4 = st.columns(2)
-        with fc3:
-            edit_amount = st.number_input(
-                "Amount Paid / Income (₹)", min_value=0.0,
-                value=float(rec_row["amount"]), format="%.2f", step=100.0
+    fc3, fc4 = st.columns(2)
+    with fc3:
+        edit_amount = st.number_input(
+            "Amount Paid / Income (₹)", min_value=0.0,
+            value=float(rec_row["amount"]), format="%.2f", step=100.0,
+            key=f"mod_amt_{rec_id}"
+        )
+        if edit_amount and edit_amount > 0:
+            st.caption(f"🇮🇳 **{format_inr(edit_amount)}** — *{number_to_indian_words(edit_amount)}*")
+    with fc4:
+        if edit_type == "Expense":
+            edit_pending_loan = st.number_input(
+                "Pending Loan Balance (₹)", min_value=0.0,
+                value=float(rec_row["pending_loan"]), format="%.2f", step=500.0,
+                key=f"mod_loan_{rec_id}"
             )
-        with fc4:
-            if edit_type == "Expense":
-                edit_pending_loan = st.number_input(
-                    "Pending Loan Balance (₹)", min_value=0.0,
-                    value=float(rec_row["pending_loan"]), format="%.2f", step=500.0
-                )
-            else:
-                edit_pending_loan = 0.0
-                st.caption("Pending Loan is ₹0 for Income entries.")
+            if edit_pending_loan and edit_pending_loan > 0:
+                st.caption(f"🇮🇳 **{format_inr(edit_pending_loan)}** — *{number_to_indian_words(edit_pending_loan)}*")
+        else:
+            edit_pending_loan = 0.0
+            st.caption("Pending Loan is ₹0 for Income entries.")
 
-        edit_details = st.text_input("Details / Notes", value=str(rec_row["details"] or ""))
+    edit_details = st.text_input("Details / Notes", value=str(rec_row["details"] or ""), key=f"mod_det_{rec_id}")
 
-        if st.form_submit_button("💾 Save Changes", type="primary", use_container_width=True):
-            final_sub_val = custom_edit_sub.strip() if edit_sub_choice == "➕ Custom Sub-category..." else edit_sub_choice
-            if not final_sub_val:
-                st.error("⚠️ Please provide a valid sub-category name.")
-            elif (edit_amount or 0.0) <= 0 and (edit_pending_loan or 0.0) <= 0:
-                st.error("⚠️ Please enter an Amount or Pending Loan greater than ₹0.")
-            else:
-                update_transaction(
-                    rec_id, edit_date, edit_type, edit_category,
-                    final_sub_val, edit_member, float(edit_amount or 0.0),
-                    float(edit_pending_loan or 0.0), edit_details.strip()
-                )
-                st.toast(f"✅ Entry #{rec_id} ({final_sub_val}) updated!", icon="✏️")
-                st.rerun()
+    inject_live_indian_words_js()
+
+    if st.button("💾 Save Changes", type="primary", use_container_width=True):
+        final_sub_val = custom_edit_sub.strip() if edit_sub_choice == "➕ Custom Sub-category..." else edit_sub_choice
+        if not final_sub_val:
+            st.error("⚠️ Please provide a valid sub-category name.")
+        elif (edit_amount or 0.0) <= 0 and (edit_pending_loan or 0.0) <= 0:
+            st.error("⚠️ Please enter an Amount or Pending Loan greater than ₹0.")
+        else:
+            update_transaction(
+                rec_id, edit_date, edit_type, edit_category,
+                final_sub_val, edit_member, float(edit_amount or 0.0),
+                float(edit_pending_loan or 0.0), edit_details.strip()
+            )
+            st.toast(f"✅ Entry #{rec_id} ({final_sub_val}) updated!", icon="✏️")
+            st.rerun()
 
 
-@st.dialog("🗑️ Delete Wrong Entries", width="large")
+@st.dialog("🗑️ Move Wrong Entries to Recycle Bin", width="large")
 def open_delete_modal(target_df, scope_label="Selected Month"):
     if target_df.empty:
         st.info("No records available to delete.")
         return
 
-    st.caption(f"Showing records from: **{scope_label}**")
+    st.caption(
+        f"Showing records from: **{scope_label}** • Deleted items stay in the Recycle Bin for {RECYCLE_BIN_RETENTION_DAYS} days."
+    )
     records_map = dict(zip(target_df["Record_Label"], target_df["id"]))
     to_delete = st.multiselect(
-        "Select one or more entries to delete permanently:",
+        "Select one or more entries to move to the Recycle Bin:",
         options=list(records_map.keys()),
         placeholder="Tap to pick or search entries..."
     )
 
-    if st.button("🗑️ Confirm & Delete Selected", type="primary", use_container_width=True):
+    if st.button("🗑️ Move Selected to Recycle Bin", type="primary", use_container_width=True):
         if to_delete:
             ids_to_remove = [records_map[label] for label in to_delete]
-            delete_transactions(ids_to_remove)
-            st.toast(f"🗑️ Deleted {len(ids_to_remove)} entry(s)!", icon="✅")
+            soft_delete_transactions(ids_to_remove)
+            st.toast(f"🗑️ Moved {len(ids_to_remove)} entry(s) to Recycle Bin!", icon="✅")
             st.rerun()
         else:
             st.warning("⚠️ Please select at least one entry above.")
@@ -597,8 +929,11 @@ def open_delete_modal(target_df, scope_label="Selected Month"):
 # ==========================================
 st.markdown("### 💰 Das Family Expense & Loan Tracker")
 
+bin_count = len(bin_df)
+bin_btn_label = f"🗑️ Recycle Bin ({bin_count})" if bin_count > 0 else "🗑️ Recycle Bin"
+
 if not df.empty:
-    btn_c1, btn_c2, btn_c3, btn_c4 = st.columns(4)
+    btn_c1, btn_c2, btn_c3, btn_c4, btn_c5 = st.columns(5)
     with btn_c1:
         if st.button("➕ Add Entry", type="primary", use_container_width=True):
             open_add_modal()
@@ -611,12 +946,18 @@ if not df.empty:
     with btn_c4:
         latest_row = df.iloc[0]
         if st.button(f"↩️ Undo Last (#{int(latest_row['id'])})", use_container_width=True):
-            delete_transactions([int(latest_row["id"])])
-            st.toast(f"Undid last entry #{int(latest_row['id'])} ({latest_row['sub_category']})!", icon="🗑️")
-            st.rerun()
+            open_undo_confirm_modal(latest_row)
+    with btn_c5:
+        if st.button(bin_btn_label, use_container_width=True):
+            open_recycle_bin_modal()
 else:
-    if st.button("➕ Add First Expense / Income / Loan", type="primary", use_container_width=True):
-        open_add_modal()
+    empty_c1, empty_c2 = st.columns([3, 1])
+    with empty_c1:
+        if st.button("➕ Add First Expense / Income / Loan", type="primary", use_container_width=True):
+            open_add_modal()
+    with empty_c2:
+        if st.button(bin_btn_label, use_container_width=True):
+            open_recycle_bin_modal()
 
 # ==========================================
 # 8. MAIN DASHBOARD (INDIAN NUMBER FORMAT)
@@ -653,7 +994,6 @@ else:
 
         m_df = df[(df["Month_Label"] == selected_month) & (df["member"].isin(selected_members))]
 
-        # Monthly Top-Level KPI Metrics in Indian Standard (Lakhs/Crores)
         m_income = m_df[m_df["t_type"] == "Income"]["amount"].sum()
         m_expense = m_df[m_df["t_type"] == "Expense"]["amount"].sum()
         m_balance = m_income - m_expense
@@ -667,7 +1007,6 @@ else:
         r2_c1.metric("Net Savings", format_inr(m_balance), delta=format_inr(m_balance))
         r2_c2.metric("Pending Loan", format_inr(m_pending_loan))
 
-        # Month-Specific Popup Action Buttons
         m_act1, m_act2 = st.columns(2)
         with m_act1:
             if st.button(f"✏️ Modify Entry in {selected_month.split(' ')[0]}", use_container_width=True, key="btn_mod_m"):
@@ -925,18 +1264,20 @@ else:
     # TAB 4: ALL RECORDS, POPUP EDIT/DELETE & CSV EXPORT
     # ------------------------------------------
     with tab_records:
-        h_btn1, h_btn2 = st.columns(2)
+        h_btn1, h_btn2, h_btn3 = st.columns(3)
         with h_btn1:
-            if st.button("✏️ Modify Any Entry (Popup)", use_container_width=True, key="btn_mod_all"):
+            if st.button("✏️ Modify Any Entry", use_container_width=True, key="btn_mod_all"):
                 open_modify_modal(df)
         with h_btn2:
-            if st.button("🗑️ Delete Wrong Entries (Popup)", use_container_width=True, key="btn_del_all"):
+            if st.button("🗑️ Move Entries to Bin", use_container_width=True, key="btn_del_all"):
                 open_delete_modal(df, scope_label="All Months")
+        with h_btn3:
+            if st.button(bin_btn_label, use_container_width=True, key="btn_bin_all"):
+                open_recycle_bin_modal()
 
         st.divider()
         st.subheader("📋 Complete History (Indian Format)")
 
-        # Create a clean copy with Indian formatting for display
         disp_df = df[["id", "t_date", "t_type", "sub_category", "member", "amount", "pending_loan", "category", "details"]].copy()
         disp_df["t_date"] = disp_df["t_date"].dt.strftime("%Y-%m-%d")
         disp_df["amount"] = disp_df["amount"].apply(lambda x: format_inr(x, 2))
@@ -946,7 +1287,6 @@ else:
             "Amount (₹)", "Pending Loan (₹)", "Category", "Details"
         ]
 
-        # Raw numeric CSV for Excel compatibility
         raw_csv_df = df[["id", "t_date", "t_type", "sub_category", "member", "amount", "pending_loan", "category", "details"]].copy()
         raw_csv_df["t_date"] = raw_csv_df["t_date"].dt.strftime("%Y-%m-%d")
         raw_csv_df.columns = disp_df.columns
@@ -963,4 +1303,7 @@ else:
         st.dataframe(disp_df, use_container_width=True, hide_index=True)
 
 # Footer status badge
-st.caption("⚡ Fast Cached Mode | 🇮🇳 Indian Format | " + ("🟢 Cloud PostgreSQL" if USE_POSTGRES else "🟡 Local SQLite (`expenses.db`)"))
+st.caption(
+    f"⚡ Fast Cached Mode | 🇮🇳 Indian Format | 🗑️ {RECYCLE_BIN_RETENTION_DAYS}-Day Recycle Bin | "
+    + ("🟢 Cloud PostgreSQL" if USE_POSTGRES else "🟡 Local SQLite (`expenses.db`)")
+)
