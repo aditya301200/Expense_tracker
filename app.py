@@ -567,6 +567,13 @@ def infer_parent_category(sub_cat_name, t_type="Expense"):
             if sub.lower() == s_clean:
                 return parent_cat
 
+    if t_type == "Income":
+        if "sal" in s_clean or "bonus" in s_clean or "pension" in s_clean:
+            return "Salary & Regular Income"
+        if "bus" in s_clean or "free" in s_clean or "rent" in s_clean:
+            return "Business & Freelance"
+        return "Investment Returns"
+
     if "loan" in s_clean or "emi" in s_clean:
         return "Loans & EMIs"
     if "cc" in s_clean or "card" in s_clean:
@@ -584,7 +591,7 @@ def infer_parent_category(sub_cat_name, t_type="Expense"):
     if "fuel" in s_clean or "petrol" in s_clean or "oil" in s_clean:
         return "Transport & Fuel"
 
-    return "Shopping & Miscellaneous" if t_type == "Expense" else "Salary & Regular Income"
+    return "Shopping & Miscellaneous"
 
 df = load_data()
 bin_df = load_recycle_bin()
@@ -673,32 +680,41 @@ def open_add_modal():
 @st.dialog("📥 Import Previous Data from Excel / CSV", width="large")
 def open_excel_import_modal():
     st.caption(
-        "Upload your `.xlsx`, `.xls`, or `.csv` file. The app automatically cleans `'₹ 3,18,885.00'` formatting, "
-        "skips Total summary rows, and lets you preview/edit everything before saving!"
+        "Supports **Income & Expense in the same sheet** and **multiple monthly sheet tabs**! "
+        "Name your Excel tabs like `Sep 2026`, `Oct 2026` to auto-assign dates, or pick dates below."
     )
-    uploaded_file = st.file_uploader("Select your Excel or CSV file", type=["xlsx", "xls", "csv"])
+    uploaded_file = st.file_uploader("Select your Excel (.xlsx / .xls) or CSV file", type=["xlsx", "xls", "csv"])
 
     if uploaded_file is not None:
+        sheets_dict = {}
         try:
             if uploaded_file.name.lower().endswith(".csv"):
-                raw_excel_df = pd.read_csv(uploaded_file)
+                sheets_dict["CSV_Sheet"] = pd.read_csv(uploaded_file)
+                selected_sheets = ["CSV_Sheet"]
             else:
                 xl = pd.ExcelFile(uploaded_file)
-                if len(xl.sheet_names) > 1:
-                    selected_sheet = st.selectbox("📑 Select Excel Sheet Tab", xl.sheet_names)
-                else:
-                    selected_sheet = xl.sheet_names[0]
-                raw_excel_df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
+                selected_sheets = st.multiselect(
+                    "📑 Select Monthly Sheet Tabs to Import (You can select multiple months at once!)",
+                    options=xl.sheet_names,
+                    default=xl.sheet_names
+                )
+                for sh in selected_sheets:
+                    sheets_dict[sh] = pd.read_excel(uploaded_file, sheet_name=sh)
         except Exception as e:
             st.error(f"❌ Could not read file: {e}")
             return
 
-        if raw_excel_df.empty:
-            st.warning("The selected sheet is empty.")
+        if not selected_sheets:
+            st.warning("Please select at least one sheet tab above.")
             return
 
-        cols = list(raw_excel_df.columns)
-        none_opt = ["(None / Use Default)"]
+        first_df = sheets_dict[selected_sheets[0]]
+        if first_df.empty:
+            st.warning("The first selected sheet is empty.")
+            return
+
+        cols = list(first_df.columns)
+        none_opt = ["(None / Auto-Detect)"]
 
         def guess_col(keywords, include_none=False):
             options = (none_opt + cols) if include_none else cols
@@ -709,114 +725,145 @@ def open_excel_import_modal():
             return 0
 
         st.markdown("##### 1️⃣ Map Your Excel Columns")
-        m_c1, m_c2, m_c3 = st.columns(3)
+        m_c1, m_c2, m_c3, m_c4 = st.columns(4)
         with m_c1:
             sub_col = st.selectbox(
                 "Sub-category Column *",
                 cols,
-                index=guess_col(["sub-catego", "sub_catego", "sub", "item", "particular", "expense", "category"])
+                index=guess_col(["sub-catego", "sub_catego", "sub", "item", "particular", "category"])
             )
         with m_c2:
+            type_col = st.selectbox(
+                "Type Column (Income/Expense)",
+                none_opt + cols,
+                index=guess_col(["type", "income/expense", "nature", "flow"], include_none=True)
+            )
+        with m_c3:
             amt_col = st.selectbox(
                 "Amount / Paid Column",
                 none_opt + cols,
-                index=guess_col(["amount", "paid", "emi", "cost", "value", "expense"], include_none=True)
+                index=guess_col(["amount", "paid", "emi", "income", "value"], include_none=True)
             )
-        with m_c3:
+        with m_c4:
             loan_col = st.selectbox(
                 "Pending Loan Column",
                 none_opt + cols,
                 index=guess_col(["pending", "loan", "balance"], include_none=True)
             )
 
-        m_c4, m_c5, m_c6 = st.columns(3)
-        with m_c4:
-            date_col = st.selectbox(
-                "Date Column (if in Excel)",
-                none_opt + cols,
-                index=guess_col(["date", "month", "day"], include_none=True)
-            )
+        m_c5, m_c6, m_c7 = st.columns(3)
         with m_c5:
             member_col = st.selectbox(
-                "Member Column (if in Excel)",
+                "Member Column",
                 none_opt + cols,
-                index=guess_col(["member", "name", "paid by", "person"], include_none=True)
+                index=guess_col(["member", "name", "paid by", "person", "earning"], include_none=True)
             )
         with m_c6:
+            date_col = st.selectbox(
+                "Date Column (Optional)",
+                none_opt + cols,
+                index=guess_col(["date", "day"], include_none=True)
+            )
+        with m_c7:
             details_col = st.selectbox(
                 "Details / Notes Column",
                 none_opt + cols,
                 index=guess_col(["detail", "note", "remark", "desc"], include_none=True)
             )
 
-        st.markdown("##### 2️⃣ Default Values (Used if Date or Member isn't in your Excel)")
-        d_c1, d_c2, d_c3 = st.columns(3)
-        with d_c1:
-            fallback_date = st.date_input("Default Month / Date for Imported Rows", date.today())
-        with d_c2:
-            fallback_member = st.selectbox("Default Family Member", EXPENSE_MEMBERS, index=2)  # Defaults to Aditya Das
-        with d_c3:
-            fallback_type = st.radio("Default Type", ["Expense", "Income"], horizontal=True)
+        st.markdown("##### 2️⃣ Assign Month Date for Each Sheet Tab")
+        st.caption("If your sheet tab is named like `Oct 2026` or `2026-09`, the date is guessed automatically, or you can pick it below:")
 
-        # Parse and clean rows from Excel
+        sheet_dates = {}
+        date_cols_ui = st.columns(min(len(selected_sheets), 4))
+        for idx, sh_name in enumerate(selected_sheets):
+            guessed_date = date.today().replace(day=1)
+            try:
+                parsed_sh_dt = pd.to_datetime(sh_name, errors="raise")
+                guessed_date = parsed_sh_dt.date().replace(day=1)
+            except Exception:
+                pass
+            with date_cols_ui[idx % len(date_cols_ui)]:
+                sheet_dates[sh_name] = st.date_input(
+                    f"📅 Date for '{sh_name}'",
+                    value=guessed_date,
+                    key=f"sh_dt_{sh_name}"
+                )
+
+        default_member = st.selectbox("Default Family Member (if blank in Excel)", EXPENSE_MEMBERS, index=2)
+
         parsed_rows = []
-        for _, r in raw_excel_df.iterrows():
-            raw_sub = r[sub_col] if sub_col in r else ""
-            if pd.isna(raw_sub):
-                continue
-            sub_str = str(raw_sub).strip()
-            # Skip empty rows or Excel 'Total' summary rows
-            if not sub_str or sub_str.lower() in ("nan", "none", "total", "grand total", "sub-category", "sub category"):
-                continue
+        income_keywords = ("salary", "income", "bonus", "freelance", "dividend", "interest", "pension", "rent received")
 
-            amt_val = clean_currency_value(r[amt_col]) if amt_col != "(None / Use Default)" else 0.0
-            loan_val = clean_currency_value(r[loan_col]) if loan_col != "(None / Use Default)" else 0.0
+        for sh_name in selected_sheets:
+            sh_df = sheets_dict[sh_name]
+            fallback_sh_date = sheet_dates[sh_name]
 
-            # Skip rows where both Amount and Pending Loan are 0
-            if amt_val <= 0 and loan_val <= 0:
-                continue
+            for _, r in sh_df.iterrows():
+                raw_sub = r[sub_col] if sub_col in r else ""
+                if pd.isna(raw_sub):
+                    continue
+                sub_str = str(raw_sub).strip()
+                if not sub_str or sub_str.lower() in ("nan", "none", "total", "grand total", "sub-category", "sub category"):
+                    continue
 
-            # Parse date if available
-            row_date = fallback_date
-            if date_col != "(None / Use Default)" and pd.notna(r[date_col]):
-                try:
-                    row_date = pd.to_datetime(r[date_col]).date()
-                except Exception:
-                    row_date = fallback_date
+                amt_val = clean_currency_value(r[amt_col]) if amt_col in r and amt_col != "(None / Auto-Detect)" else 0.0
+                loan_val = clean_currency_value(r[loan_col]) if loan_col in r and loan_col != "(None / Auto-Detect)" else 0.0
 
-            # Parse member if available
-            row_member = fallback_member
-            if member_col != "(None / Use Default)" and pd.notna(r[member_col]):
-                m_str = str(r[member_col]).strip()
-                if m_str and m_str.lower() not in ("nan", "none"):
-                    row_member = m_str
+                if amt_val <= 0 and loan_val <= 0:
+                    continue
 
-            # Parse details if available
-            row_details = "Imported from Excel"
-            if details_col != "(None / Use Default)" and pd.notna(r[details_col]):
-                d_str = str(r[details_col]).strip()
-                if d_str and d_str.lower() not in ("nan", "none"):
-                    row_details = d_str
+                row_type = "Expense"
+                if type_col != "(None / Auto-Detect)" and type_col in r and pd.notna(r[type_col]):
+                    t_raw = str(r[type_col]).strip().lower()
+                    if "inc" in t_raw or "sal" in t_raw or "earn" in t_raw:
+                        row_type = "Income"
+                else:
+                    if any(k in sub_str.lower() for k in income_keywords) and loan_val <= 0:
+                        row_type = "Income"
 
-            parent_cat = infer_parent_category(sub_str, fallback_type)
+                if row_type == "Income":
+                    loan_val = 0.0
 
-            parsed_rows.append({
-                "Import": True,
-                "Date": row_date,
-                "Type": fallback_type,
-                "Category": parent_cat,
-                "Sub-category": sub_str,
-                "Member": row_member,
-                "Amount (₹)": amt_val,
-                "Pending Loan (₹)": loan_val,
-                "Details": row_details
-            })
+                row_date = fallback_sh_date
+                if date_col != "(None / Auto-Detect)" and date_col in r and pd.notna(r[date_col]):
+                    try:
+                        row_date = pd.to_datetime(r[date_col]).date()
+                    except Exception:
+                        row_date = fallback_sh_date
+
+                row_member = default_member
+                if member_col != "(None / Auto-Detect)" and member_col in r and pd.notna(r[member_col]):
+                    m_str = str(r[member_col]).strip()
+                    if m_str and m_str.lower() not in ("nan", "none"):
+                        row_member = m_str
+
+                row_details = f"Imported ({sh_name})"
+                if details_col != "(None / Auto-Detect)" and details_col in r and pd.notna(r[details_col]):
+                    d_str = str(r[details_col]).strip()
+                    if d_str and d_str.lower() not in ("nan", "none"):
+                        row_details = d_str
+
+                parent_cat = infer_parent_category(sub_str, row_type)
+
+                parsed_rows.append({
+                    "Import": True,
+                    "Sheet": sh_name,
+                    "Date": row_date,
+                    "Type": row_type,
+                    "Category": parent_cat,
+                    "Sub-category": sub_str,
+                    "Member": row_member,
+                    "Amount (₹)": amt_val,
+                    "Pending Loan (₹)": loan_val,
+                    "Details": row_details
+                })
 
         if not parsed_rows:
-            st.warning("⚠️ No valid rows with Amount > 0 or Pending Loan > 0 were found. Check your column mapping above.")
+            st.warning("⚠️ No valid rows with Amount > 0 or Pending Loan > 0 were found.")
             return
 
-        st.markdown("##### 3️⃣ Review & Edit Before Importing")
+        st.markdown("##### 3️⃣ Review & Edit All Monthly Sheets Before Saving")
         preview_import_df = pd.DataFrame(parsed_rows)
         edited_import_df = st.data_editor(
             preview_import_df,
@@ -824,6 +871,7 @@ def open_excel_import_modal():
             use_container_width=True,
             column_config={
                 "Import": st.column_config.CheckboxColumn("Import?", default=True),
+                "Sheet": st.column_config.TextColumn("Sheet Tab", disabled=True),
                 "Date": st.column_config.DateColumn("Date"),
                 "Type": st.column_config.SelectboxColumn("Type", options=["Expense", "Income"]),
                 "Category": st.column_config.SelectboxColumn(
@@ -839,16 +887,18 @@ def open_excel_import_modal():
         )
 
         to_import = edited_import_df[edited_import_df["Import"] == True]
-        imp_amt_total = to_import["Amount (₹)"].sum()
+        imp_inc_total = to_import[to_import["Type"] == "Income"]["Amount (₹)"].sum()
+        imp_exp_total = to_import[to_import["Type"] == "Expense"]["Amount (₹)"].sum()
         imp_loan_total = to_import["Pending Loan (₹)"].sum()
 
         st.caption(
-            f"✅ **{len(to_import)} rows ready** | "
-            f"Total Amount: **{format_inr(imp_amt_total, 2)}** | "
-            f"Total Pending Loan: **{format_inr(imp_loan_total, 2)}**"
+            f"✅ **{len(to_import)} rows across {len(selected_sheets)} sheet(s)** | "
+            f"Income: **{format_inr(imp_inc_total, 2)}** | "
+            f"Expense: **{format_inr(imp_exp_total, 2)}** | "
+            f"Pending Loan: **{format_inr(imp_loan_total, 2)}**"
         )
 
-        if st.button(f"🚀 Import {len(to_import)} Rows into Database", type="primary", use_container_width=True):
+        if st.button(f"🚀 Import All {len(to_import)} Rows into Database", type="primary", use_container_width=True):
             if to_import.empty:
                 st.warning("Please keep at least one row checked.")
             else:
@@ -866,7 +916,7 @@ def open_excel_import_modal():
                     for _, row in to_import.iterrows()
                 ]
                 bulk_add_transactions(records_to_save)
-                st.toast(f"🎉 Successfully imported {len(records_to_save)} rows from Excel!", icon="📥")
+                st.toast(f"🎉 Imported {len(records_to_save)} rows from {len(selected_sheets)} sheet(s)!", icon="📥")
                 st.rerun()
 
 
