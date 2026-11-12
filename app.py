@@ -79,9 +79,10 @@ st.markdown("""
 
 PLOTLY_MOBILE_CONFIG = {"displayModeBar": False, "responsive": True}
 RECYCLE_BIN_RETENTION_DAYS = 3
+SALARY_CUTOFF_DAY = 24  # Salaries credited on or after the 24th count toward next month's budget
 
 # ==========================================
-# 2. INDIAN CURRENCY, PARSER & WORDS FORMATTERS
+# 2. INDIAN CURRENCY, PARSER & SALARY SHIFT
 # ==========================================
 def format_inr(val, decimals=0):
     """Formats numbers in Indian Standard (e.g., ₹12,26,956 or ₹3,18,885.00)."""
@@ -162,6 +163,34 @@ def number_to_indian_words(val):
         parts.append(f"{rem}")
 
     return " ".join(parts) + " Rupees"
+
+
+def get_effective_accounting_date(row):
+    """
+    If an Income transaction is a Salary credited on the last working days of the month
+    (day >= 24, e.g. 30th Oct Friday), shifts its effective accounting month to the 1st of
+    the NEXT month (e.g. Nov) so it funds the upcoming month's expenses!
+    """
+    dt = row["t_date"]
+    t_type = str(row.get("t_type", ""))
+    sub_cat = str(row.get("sub_category", "")).lower()
+    details = str(row.get("details", "")).lower()
+
+    is_salary = (
+        t_type == "Income" and (
+            "salary" in sub_cat or
+            "salary" in details or
+            "tata consultancy" in details
+        )
+    )
+
+    if is_salary and dt.day >= SALARY_CUTOFF_DAY:
+        if dt.month == 12:
+            return pd.Timestamp(year=dt.year + 1, month=1, day=1)
+        else:
+            return pd.Timestamp(year=dt.year, month=dt.month + 1, day=1)
+
+    return pd.Timestamp(year=dt.year, month=dt.month, day=1)
 
 
 def inject_live_indian_words_js():
@@ -380,7 +409,7 @@ init_db_once()
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_data():
-    """Loads active (non-deleted) transactions."""
+    """Loads active transactions and shifts end-of-month salaries (day >= 24) into next month's budget."""
     conn = get_connection()
     df = pd.read_sql_query(
         "SELECT * FROM transactions WHERE deleted_at IS NULL OR deleted_at = '' ORDER BY t_date DESC, id DESC",
@@ -395,12 +424,18 @@ def load_data():
         df["amount"] = df["amount"].astype(float)
         df["pending_loan"] = df["pending_loan"].fillna(0.0).astype(float)
         df["sub_category"] = df["sub_category"].fillna("Miscellaneous")
-        df["Month_Key"] = df["t_date"].dt.strftime("%Y-%m")
-        df["Month_Label"] = df["t_date"].dt.strftime("%B %Y (%Y-%m)")
+
+        # Compute Effective Accounting Month (Shifts last-working-day salaries to Next Month!)
+        df["Effective_Date"] = df.apply(get_effective_accounting_date, axis=1)
+        df["Month_Key"] = df["Effective_Date"].dt.strftime("%Y-%m")
+        df["Month_Label"] = df["Effective_Date"].dt.strftime("%B %Y (%Y-%m)")
+        df["Is_Shifted_Salary"] = df["Effective_Date"].dt.month != df["t_date"].dt.month
+
         df["Record_Label"] = df.apply(
             lambda r: (
-                f"#{int(r['id'])} | {r['t_date'].strftime('%Y-%m-%d')} | [{r['bank']}] "
-                f"{r['sub_category']} | {format_inr(r['amount'], 0)}"
+                f"#{int(r['id'])} | {r['t_date'].strftime('%Y-%m-%d')}"
+                + (f" ➡️ [{r['Effective_Date'].strftime('%b %Y')} Salary]" if r["Is_Shifted_Salary"] else "")
+                + f" | [{r['bank']}] {r['sub_category']} | {format_inr(r['amount'], 0)}"
                 + (f" (Loan: {format_inr(r['pending_loan'], 0)})" if r["pending_loan"] > 0 else "")
                 + f" • {r['member']}"
             ),
@@ -676,6 +711,9 @@ def open_add_modal():
     f_col1, f_col2 = st.columns(2)
     with f_col1:
         t_date = st.date_input("Date", date.today())
+        if t_type == "Income" and selected_sub == "Monthly Salary" and t_date.day >= SALARY_CUTOFF_DAY:
+            next_m = (t_date.replace(day=28) + timedelta(days=10)).strftime("%B %Y")
+            st.caption(f"📅 **End-of-Month Salary:** Will automatically count toward **{next_m}**'s budget!")
     with f_col2:
         if t_type == "Income":
             member = st.selectbox("Earning Family Member", EARNING_MEMBERS, index=2)
@@ -733,8 +771,7 @@ def open_add_modal():
 def open_excel_import_modal():
     st.caption(
         "Directly supports **`Merged_SBI_HDFC_Expenses_2026.csv`** and **`.xlsx`**! "
-        "Automatically detects `Bank` (`SBI`/`HDFC`), `Type` (`Expense`/`Income`/`Self Transfer`), "
-        "and sets any unclassified expense to **`Miscellaneous`**."
+        "Any salary credited on or after the 24th (e.g., 30th Oct Friday) is automatically counted as **Next Month's Salary**."
     )
     uploaded_file = st.file_uploader("Select your CSV or Excel (.xlsx / .xls) file", type=["csv", "xlsx", "xls"])
 
@@ -848,7 +885,6 @@ def open_excel_import_modal():
                 pass
 
             for _, r in sh_df.iterrows():
-                # Skip Excel 'Total' summary rows at the bottom of monthly sheets
                 raw_bank_val = str(r[bank_col]).strip().lower() if bank_col in r and pd.notna(r[bank_col]) else ""
                 raw_type_val = str(r[type_col]).strip().lower() if type_col in r and pd.notna(r[type_col]) else ""
                 if raw_bank_val == "total" or raw_type_val.startswith("inc:") or raw_type_val == "total":
@@ -859,7 +895,6 @@ def open_excel_import_modal():
                 if amt_val <= 0 and loan_val <= 0:
                     continue
 
-                # Determine Type (Expense, Income, or Self Transfer)
                 row_type = "Expense"
                 if type_col != "(None / Auto-Detect)" and type_col in r and pd.notna(r[type_col]):
                     t_raw = str(r[type_col]).strip().lower()
@@ -868,7 +903,6 @@ def open_excel_import_modal():
                     elif "inc" in t_raw or "sal" in t_raw or "earn" in t_raw:
                         row_type = "Income"
 
-                # Determine Sub-category (Default unclassified Expense -> 'Miscellaneous')
                 raw_sub = r[sub_col] if sub_col != "(None / Auto-Detect)" and sub_col in r else ""
                 sub_str = "" if pd.isna(raw_sub) else str(raw_sub).strip()
                 if sub_str.lower() in ("total", "grand total", "sub-category", "sub category"):
@@ -884,7 +918,6 @@ def open_excel_import_modal():
                 if row_type in ("Income", "Self Transfer"):
                     loan_val = 0.0
 
-                # Determine Bank
                 row_bank = "SBI"
                 if bank_col != "(None / Auto-Detect)" and bank_col in r and pd.notna(r[bank_col]):
                     b_str = str(r[bank_col]).strip().upper()
@@ -895,7 +928,6 @@ def open_excel_import_modal():
                     elif b_str and b_str not in ("NAN", "NONE"):
                         row_bank = b_str
 
-                # Determine Date
                 row_date = guessed_sh_date
                 if date_col != "(None / Auto-Detect)" and date_col in r and pd.notna(r[date_col]):
                     try:
@@ -903,21 +935,18 @@ def open_excel_import_modal():
                     except Exception:
                         row_date = guessed_sh_date
 
-                # Determine Member
                 row_member = "Aditya Das"
                 if member_col != "(None / Auto-Detect)" and member_col in r and pd.notna(r[member_col]):
                     m_str = str(r[member_col]).strip()
                     if m_str and m_str.lower() not in ("nan", "none"):
                         row_member = m_str
 
-                # Determine Details
                 row_details = f"Imported ({sh_name})"
                 if details_col != "(None / Auto-Detect)" and details_col in r and pd.notna(r[details_col]):
                     d_str = str(r[details_col]).strip()
                     if d_str and d_str.lower() not in ("nan", "none"):
                         row_details = d_str
 
-                # Determine Category
                 parent_cat = ""
                 if cat_col != "(None / Auto-Detect)" and cat_col in r and pd.notna(r[cat_col]):
                     c_str = str(r[cat_col]).strip()
@@ -1385,12 +1414,13 @@ else:
             (df["member"].isin(selected_members))
         ]
 
-        # Monthly Top-Level KPI Metrics (Excludes 'Self Transfer' so totals are 100% accurate!)
+        # Monthly Top-Level KPI Metrics (Excludes 'Self Transfer' & includes shifted salary from prev month's last working day!)
         m_income = m_df[m_df["t_type"] == "Income"]["amount"].sum()
         m_expense = m_df[m_df["t_type"] == "Expense"]["amount"].sum()
         m_balance = m_income - m_expense
         m_pending_loan = m_df["pending_loan"].sum()
         m_self_transfer = m_df[m_df["t_type"] == "Self Transfer"]["amount"].sum()
+        shifted_sal_df = m_df[m_df["Is_Shifted_Salary"] == True]
 
         r1_c1, r1_c2 = st.columns(2)
         r1_c1.metric("Monthly Income", format_inr(m_income))
@@ -1400,10 +1430,17 @@ else:
         r2_c1.metric("Net Savings", format_inr(m_balance), delta=format_inr(m_balance))
         r2_c2.metric("Pending Loan", format_inr(m_pending_loan))
 
+        if not shifted_sal_df.empty:
+            sal_dates = ", ".join(shifted_sal_df["t_date"].dt.strftime("%d %b %Y").unique())
+            sal_sum = shifted_sal_df["amount"].sum()
+            st.caption(
+                f"📅 **Salary Shift Active:** Includes **{format_inr(sal_sum)}** salary credited on **{sal_dates}** "
+                f"(last working day of previous month) as **{selected_month.split(' (')[0]}**'s income."
+            )
+
         if m_self_transfer > 0:
             st.caption(
-                f"🔄 **Internal Self-Transfers / FD Sweeps Excluded from Totals:** {format_inr(m_self_transfer)} "
-                f"(so transfers between SBI & HDFC are never double-counted as Income or Expense)."
+                f"🔄 **Internal Self-Transfers / FD Sweeps Excluded from Totals:** {format_inr(m_self_transfer)}"
             )
 
         m_act1, m_act2 = st.columns(2)
@@ -1418,7 +1455,6 @@ else:
 
         exp_m_df = m_df[m_df["t_type"] == "Expense"]
         inc_m_df = m_df[m_df["t_type"] == "Income"]
-        loan_m_df = m_df[m_df["pending_loan"] > 0]
 
         hole_size = 0.42 if chart_style == "PieChart (Donut)" else 0.0
 
@@ -1633,7 +1669,7 @@ else:
 
         st.divider()
 
-        st.subheader("📊 Monthly Income vs. Expense (Excludes Self Transfers)")
+        st.subheader("📊 Monthly Income vs. Expense (With Shifted Salary Month)")
         active_df = df[df["t_type"].isin(["Income", "Expense"])]
         mom_df = active_df.groupby(["Month_Key", "t_type"], as_index=False)["amount"].sum().sort_values("Month_Key")
         mom_df["INR_Label"] = mom_df["amount"].apply(format_inr)
@@ -1688,16 +1724,16 @@ else:
         )
         hist_df = df[df["t_type"].isin(type_filter_hist)]
 
-        disp_df = hist_df[["id", "t_date", "bank", "t_type", "sub_category", "member", "amount", "pending_loan", "category", "details"]].copy()
+        disp_df = hist_df[["id", "t_date", "Month_Key", "bank", "t_type", "sub_category", "member", "amount", "pending_loan", "category", "details"]].copy()
         disp_df["t_date"] = disp_df["t_date"].dt.strftime("%Y-%m-%d")
         disp_df["amount"] = disp_df["amount"].apply(lambda x: format_inr(x, 2))
         disp_df["pending_loan"] = disp_df["pending_loan"].apply(lambda x: format_inr(x, 2))
         disp_df.columns = [
-            "ID", "Date", "Bank", "Type", "Sub-category", "Member",
+            "ID", "Actual Date", "Budget Month", "Bank", "Type", "Sub-category", "Member",
             "Amount (₹)", "Pending Loan (₹)", "Category", "Details"
         ]
 
-        raw_csv_df = hist_df[["id", "t_date", "bank", "t_type", "sub_category", "member", "amount", "pending_loan", "category", "details"]].copy()
+        raw_csv_df = hist_df[["id", "t_date", "Month_Key", "bank", "t_type", "sub_category", "member", "amount", "pending_loan", "category", "details"]].copy()
         raw_csv_df["t_date"] = raw_csv_df["t_date"].dt.strftime("%Y-%m-%d")
         raw_csv_df.columns = disp_df.columns
         csv_bytes = raw_csv_df.to_csv(index=False).encode("utf-8")
@@ -1714,6 +1750,6 @@ else:
 
 # Footer status badge
 st.caption(
-    f"⚡ Fast Cached Mode | 🇮🇳 Indian Format | 🏦 SBI + HDFC | 🗑️ {RECYCLE_BIN_RETENTION_DAYS}-Day Recycle Bin | "
+    f"⚡ Fast Cached Mode | 📅 Salary Auto-Shift (Day ≥ {SALARY_CUTOFF_DAY} ➡️ Next Month) | 🏦 SBI + HDFC | "
     + ("🟢 Cloud PostgreSQL" if USE_POSTGRES else "🟡 Local SQLite (`expenses.db`)")
 )
