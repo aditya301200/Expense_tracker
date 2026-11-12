@@ -5,6 +5,7 @@ import sqlite3
 import re
 from datetime import date, datetime, timedelta
 import plotly.express as px
+import plotly.io as pio
 
 # Optional PostgreSQL import (used when DB_URL is configured)
 try:
@@ -25,7 +26,7 @@ st.set_page_config(
 # Responsive CSS:
 # - Fixes top header clipping on mobile
 # - Forces 2-column side-by-side KPI metrics & multi-column button grid on phone
-# - Keeps desktop/laptop layout spacious
+# - Prevents pointer cursor/typing glitches on selectboxes
 st.markdown("""
 <style>
     .block-container {
@@ -40,6 +41,11 @@ st.markdown("""
         margin-top: 0.2rem;
         margin-bottom: 0.6rem;
         line-height: 1.25;
+    }
+    /* Make selectbox inputs look and behave like uneditable dropdowns */
+    div[data-baseweb="select"] input {
+        caret-color: transparent !important;
+        cursor: pointer !important;
     }
     /* Desktop / Laptop Button Styling */
     .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
@@ -76,12 +82,13 @@ st.markdown("""
             overflow: hidden;
             text-overflow: ellipsis;
         }
-        /* Keep horizontal blocks in a 2-column or 3-column grid instead of 1-column vertical stack */
+        /* Keep horizontal blocks in a 2-column grid instead of 1-column vertical stack */
         div[data-testid="stHorizontalBlock"] {
             display: flex !important;
             flex-direction: row !important;
             flex-wrap: wrap !important;
             gap: 6px !important;
+            align-items: center !important;
         }
         div[data-testid="stHorizontalBlock"] > div[data-testid="column"],
         div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
@@ -123,13 +130,23 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-PLOTLY_MOBILE_CONFIG = {"displayModeBar": False, "responsive": True}
-CHART_HEIGHT = 250  # Compact chart height for mobile & desktop
+PLOTLY_MOBILE_CONFIG = {
+    "displayModeBar": False,
+    "responsive": True,
+    "doubleClick": "reset"
+}
+PLOTLY_POPUP_CONFIG = {
+    "displayModeBar": True,
+    "displaylogo": False,
+    "responsive": True
+}
+CHART_HEIGHT = 240  # Compact inline chart height
+POPUP_CHART_HEIGHT = 500  # Large detailed popup chart height
 RECYCLE_BIN_RETENTION_DAYS = 3
 SALARY_CUTOFF_DAY = 24  # Salaries credited on or after the 24th count toward next month's budget
 
 # ==========================================
-# 2. INDIAN CURRENCY, PARSER & SALARY SHIFT
+# 2. INDIAN CURRENCY, PARSER & MOBILE UX JS
 # ==========================================
 def format_inr(val, decimals=0):
     """Formats numbers in Indian Standard (e.g., ₹12,26,956 or ₹3,18,885.00)."""
@@ -241,7 +258,7 @@ def get_effective_accounting_date(row):
 
 
 def style_compact_chart(fig, show_legend=False):
-    """Applies compact mobile-friendly height and tight margins to any Plotly chart."""
+    """Applies compact mobile-friendly height and tight margins to inline dashboard charts."""
     fig.update_layout(
         height=CHART_HEIGHT,
         margin=dict(t=8, b=8, l=8, r=8),
@@ -251,8 +268,13 @@ def style_compact_chart(fig, show_legend=False):
     return fig
 
 
-def inject_live_indian_words_js():
-    """Injects a keystroke listener into the popup modal for live Indian words under number inputs."""
+def inject_mobile_ux_fixes_js():
+    """
+    1. Makes all st.selectbox and st.multiselect dropdowns UNEDITABLE (readOnly = true, inputmode = 'none')
+       so tapping a dropdown on mobile NEVER pops up the virtual keyboard!
+    2. Attaches live Indian words converter underneath any number input box.
+    3. Enables double-click / double-tap on any chart card to trigger its '🔍 Enlarge' popup button!
+    """
     components.html(
         """
         <script>
@@ -290,7 +312,18 @@ def inject_live_indian_words_js():
                 return "₹" + num.toLocaleString("en-IN", {maximumFractionDigits: 2});
             }
 
-            function attachListeners() {
+            function applyMobileFixes() {
+                // 1. LOCK ALL DROPDOWNS SO MOBILE KEYBOARD NEVER POPS UP
+                const selectInputs = parentDoc.querySelectorAll('div[data-baseweb="select"] input');
+                selectInputs.forEach((inp) => {
+                    if (inp.getAttribute('readonly') !== 'readonly') {
+                        inp.setAttribute('readonly', 'readonly');
+                        inp.setAttribute('inputmode', 'none');
+                        inp.readOnly = true;
+                    }
+                });
+
+                // 2. LIVE INDIAN WORDS UNDER NUMBER INPUTS
                 const numInputs = parentDoc.querySelectorAll('div[data-testid="stNumberInput"] input');
                 numInputs.forEach((input) => {
                     if (input.dataset.indianWordsAttached === "true") return;
@@ -320,10 +353,45 @@ def inject_live_indian_words_js():
                     input.addEventListener('change', updateText);
                     updateText();
                 });
+
+                // 3. DOUBLE-CLICK / DOUBLE-TAP ON ANY CHART TO OPEN POPUP MODAL
+                const charts = parentDoc.querySelectorAll('div[data-testid="stPlotlyChart"]');
+                charts.forEach((chartDiv) => {
+                    if (chartDiv.dataset.dblTapAttached === "true") return;
+                    chartDiv.dataset.dblTapAttached = "true";
+
+                    const triggerPopupBtn = () => {
+                        // Find the closest preceding '🔍 Enlarge' button in the same column
+                        const col = chartDiv.closest('div[data-testid="column"], div[data-testid="stColumn"]');
+                        const root = col || chartDiv.parentElement;
+                        if (!root) return;
+                        const buttons = root.querySelectorAll('button');
+                        for (let b of buttons) {
+                            if (b.innerText && b.innerText.includes('🔍')) {
+                                b.click();
+                                break;
+                            }
+                        }
+                    };
+
+                    // Desktop double-click
+                    chartDiv.addEventListener('dblclick', triggerPopupBtn);
+
+                    // Mobile double-tap detector
+                    let lastTap = 0;
+                    chartDiv.addEventListener('touchend', function(e) {
+                        const currentTime = new Date().getTime();
+                        const tapLength = currentTime - lastTap;
+                        if (tapLength < 350 && tapLength > 0) {
+                            triggerPopupBtn();
+                        }
+                        lastTap = currentTime;
+                    });
+                });
             }
 
-            attachListeners();
-            const observer = new MutationObserver(attachListeners);
+            applyMobileFixes();
+            const observer = new MutationObserver(applyMobileFixes);
             observer.observe(parentDoc.body, { childList: true, subtree: true });
         })();
         </script>
@@ -359,6 +427,9 @@ def check_pin():
 
 if not check_pin():
     st.stop()
+
+# Inject global mobile dropdown keyboard blocker & double-tap chart listener
+inject_mobile_ux_fixes_js()
 
 # ==========================================
 # 4. CACHED DATABASE ENGINE + BANK & RECYCLE BIN
@@ -472,7 +543,6 @@ BANK_OPTIONS = ["SBI", "HDFC", "Cash / Other"]
 EARNING_MEMBERS = ["Amal Das", "Abhijit Das", "Aditya Das", "Other"]
 EXPENSE_MEMBERS = ["Amal Das", "Abhijit Das", "Aditya Das", "Shared / Family"]
 
-# Dedicated Loan Categories & Sub-Categories for the Pending Loan Tracker
 LOAN_CATEGORY_MAP = {
     "Gold Loan": ["Gold Loan", "Gold Loan 1", "Gold Loan 2", "Manappuram Gold Loan"],
     "Education Loan": ["EDU loan", "EDU loan 1", "EDU loan 2"],
@@ -510,7 +580,6 @@ SELF_TRANSFER_CATEGORY_MAP = {
 }
 
 def infer_loan_category(sub_cat_name, existing_cat=""):
-    """Maps any loan sub-category (e.g., 'Gold Loan', 'EDU loan') into a specific Loan Category for Loan Charts."""
     if existing_cat in LOAN_CATEGORY_MAP:
         return existing_cat
     s = str(sub_cat_name or "").lower()
@@ -770,6 +839,54 @@ bin_df = load_recycle_bin()
 # ==========================================
 # 6. POPUP MODAL DIALOGS (@st.dialog)
 # ==========================================
+@st.dialog("🔍 Fullscreen Interactive Chart View", width="large")
+def open_chart_popup_modal(fig_json_str, chart_title, summary_df=None):
+    """Pops up any chart in a large, readable view with full legend and data breakdown for mobile."""
+    st.markdown(f"#### {chart_title}")
+    st.caption("💡 Tap legend items below the chart to hide/isolate slices, or pinch to zoom.")
+    popup_fig = pio.from_json(fig_json_str)
+    popup_fig.update_layout(
+        height=POPUP_CHART_HEIGHT,
+        margin=dict(t=25, b=90, l=15, r=15),
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.08,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=12)
+        ),
+        font=dict(size=13)
+    )
+    # Show outside labels + percentages on pie charts when popped up so nothing is cramped
+    for trace in popup_fig.data:
+        if trace.type == "pie":
+            trace.textposition = "inside"
+            trace.textinfo = "percent+label"
+    st.plotly_chart(popup_fig, use_container_width=True, config=PLOTLY_POPUP_CONFIG)
+
+    if summary_df is not None and not summary_df.empty:
+        with st.expander("📋 View Exact Numbers Table", expanded=True):
+            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+
+def render_chart_with_popup(title, fig, key_suffix, summary_df=None, show_inline_legend=False):
+    """Renders a compact chart on the dashboard with a 1-tap '🔍 Enlarge' button AND double-tap support."""
+    hdr_c1, hdr_c2 = st.columns([3, 1])
+    with hdr_c1:
+        st.markdown(f"**{title}**")
+    with hdr_c2:
+        if st.button("🔍 Enlarge", key=f"enlarge_{key_suffix}", use_container_width=True):
+            open_chart_popup_modal(fig.to_json(), title, summary_df)
+    st.plotly_chart(
+        style_compact_chart(fig, show_legend=show_inline_legend),
+        use_container_width=True,
+        config=PLOTLY_MOBILE_CONFIG,
+        key=f"plot_{key_suffix}"
+    )
+
+
 @st.dialog("➕ Add New Expense / Income / Transfer", width="large")
 def open_add_modal():
     top_col1, top_col2 = st.columns(2)
@@ -829,7 +946,7 @@ def open_add_modal():
 
     details = st.text_input("Details / Notes (Optional)", placeholder="e.g., Monthly bill or EMI")
 
-    inject_live_indian_words_js()
+    inject_mobile_ux_fixes_js()
 
     if st.button("💾 Save Entry", type="primary", use_container_width=True):
         clean_amount = float(amount) if amount is not None else 0.0
@@ -856,7 +973,6 @@ def open_pending_loan_modal():
     )
     mode_tab1, mode_tab2 = st.tabs(["➕ Add Single Pending Loan", "📋 Bulk Month-Wise Loan Sheet"])
 
-    # Mode 1: Add a Single Pending Loan with Loan Category
     with mode_tab1:
         l_c1, l_c2 = st.columns(2)
         with l_c1:
@@ -889,7 +1005,7 @@ def open_pending_loan_modal():
             )
             loan_notes = st.text_input("Loan Details / Account Note", placeholder="e.g., Education Loan 1")
 
-        inject_live_indian_words_js()
+        inject_mobile_ux_fixes_js()
 
         if st.button("💾 Save Pending Loan Entry", type="primary", use_container_width=True):
             final_loan_sub = cust_loan_name.strip() if loan_sub_sel == "➕ Custom Loan Name..." else loan_sub_sel
@@ -909,7 +1025,6 @@ def open_pending_loan_modal():
                 st.toast(f"✅ Saved {final_loan_sub} Pending Loan: {format_inr(clean_bal)}", icon="🏦")
                 st.rerun()
 
-    # Mode 2: Bulk Month-Wise Loan Sheet (Pre-populated with your standard loans or previous month's loans!)
     with mode_tab2:
         b_c1, b_c2 = st.columns(2)
         with b_c1:
@@ -1310,6 +1425,8 @@ def open_recycle_bin_modal():
         default=list(bin_map.keys())
     )
 
+    inject_mobile_ux_fixes_js()
+
     b_col1, b_col2 = st.columns(2)
     with b_col1:
         if st.button("♻️ Restore Selected", type="primary", use_container_width=True):
@@ -1361,6 +1478,8 @@ def open_copy_modal():
         ["Only Expenses & Loans", "Only Pending Loans", "Both Expenses & Income"],
         horizontal=True
     )
+
+    inject_mobile_ux_fixes_js()
 
     src_df = df[df["Month_Label"] == source_month].copy()
     if clone_filter == "Only Expenses & Loans":
@@ -1528,7 +1647,7 @@ def open_modify_modal(target_df):
 
     edit_details = st.text_input("Details / Notes", value=str(rec_row["details"] or ""), key=f"mod_det_{rec_id}")
 
-    inject_live_indian_words_js()
+    inject_mobile_ux_fixes_js()
 
     if st.button("💾 Save Changes", type="primary", use_container_width=True):
         final_sub_val = custom_edit_sub.strip() if edit_sub_choice == "➕ Custom Sub-category..." else edit_sub_choice
@@ -1559,8 +1678,10 @@ def open_delete_modal(target_df, scope_label="Selected Month"):
     to_delete = st.multiselect(
         "Select one or more entries to move to the Recycle Bin:",
         options=list(records_map.keys()),
-        placeholder="Tap to pick or search entries..."
+        placeholder="Tap to pick entries..."
     )
+
+    inject_mobile_ux_fixes_js()
 
     if st.button("🗑️ Move Selected to Recycle Bin", type="primary", use_container_width=True):
         if to_delete:
@@ -1580,7 +1701,6 @@ bin_count = len(bin_df)
 bin_btn_label = f"🗑️ Bin ({bin_count})" if bin_count > 0 else "🗑️ Bin"
 
 if not df.empty:
-    # 2x3 / 2-column responsive button grid on mobile, single row on desktop
     btn_c1, btn_c2, btn_c3, btn_c4, btn_c5, btn_c6 = st.columns(6)
     with btn_c1:
         if st.button("➕ Add Entry", type="primary", use_container_width=True):
@@ -1670,7 +1790,6 @@ else:
         m_self_transfer = m_df[m_df["t_type"] == "Self Transfer"]["amount"].sum()
         shifted_sal_df = m_df[m_df["Is_Shifted_Salary"] == True]
 
-        # 2x2 Side-by-Side KPI Grid on Mobile & Desktop
         r1_c1, r1_c2 = st.columns(2)
         r1_c1.metric("Monthly Income", format_inr(m_income))
         r1_c2.metric("Monthly Expense", format_inr(m_expense))
@@ -1701,6 +1820,7 @@ else:
                 open_delete_modal(m_df, scope_label=selected_month)
 
         st.divider()
+        st.caption("💡 **Tip:** Double-tap any chart (or tap **🔍 Enlarge**) to pop it open in Fullscreen with legends & tables!")
 
         exp_m_df = m_df[m_df["t_type"] == "Expense"]
         inc_m_df = m_df[m_df["t_type"] == "Income"]
@@ -1709,10 +1829,12 @@ else:
 
         ch1, ch2 = st.columns(2)
         with ch1:
-            st.markdown("**🥧 Category Expense**")
             if not exp_m_df.empty and exp_m_df["amount"].sum() > 0:
                 cat_grp = exp_m_df.groupby("category", as_index=False)["amount"].sum().sort_values("amount", ascending=True)
                 cat_grp["INR_Label"] = cat_grp["amount"].apply(format_inr)
+                cat_tbl = cat_grp.sort_values("amount", ascending=False)[["category", "INR_Label"]].rename(
+                    columns={"category": "Category", "INR_Label": "Amount"}
+                )
                 if chart_style in ("Donut", "Solid Pie"):
                     fig_cat = px.pie(
                         cat_grp, values="amount", names="category", hole=hole_size,
@@ -1723,93 +1845,95 @@ else:
                         textposition="inside", textinfo="percent+label",
                         hovertemplate="<b>%{label}</b><br>%{customdata[0]} (%{percent})<extra></extra>"
                     )
-                    st.plotly_chart(style_compact_chart(fig_cat), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
                 else:
-                    fig_cat_bar = px.bar(
+                    fig_cat = px.bar(
                         cat_grp, x="amount", y="category", color="category", orientation="h",
                         text="INR_Label", labels={"category": "", "amount": "₹"}
                     )
-                    fig_cat_bar.update_traces(hovertemplate="<b>%{y}</b>: %{text}<extra></extra>")
-                    st.plotly_chart(style_compact_chart(fig_cat_bar), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                    fig_cat.update_traces(hovertemplate="<b>%{y}</b>: %{text}<extra></extra>")
+                render_chart_with_popup("🥧 Category Expense", fig_cat, "m_cat", cat_tbl)
             else:
                 st.info("No expenses for this month.")
 
         with ch2:
-            st.markdown("**🎯 Sub-Category Expense**")
             if not exp_m_df.empty and exp_m_df["amount"].sum() > 0:
                 sub_grp = exp_m_df.groupby(["sub_category", "category"], as_index=False)["amount"].sum().sort_values("amount", ascending=True)
                 sub_grp["INR_Label"] = sub_grp["amount"].apply(format_inr)
+                sub_tbl = sub_grp.sort_values("amount", ascending=False)[["sub_category", "category", "INR_Label"]].rename(
+                    columns={"sub_category": "Sub-category", "category": "Category", "INR_Label": "Amount"}
+                )
                 if chart_style in ("Donut", "Solid Pie"):
-                    fig_sub_pie = px.pie(
+                    fig_sub = px.pie(
                         sub_grp, values="amount", names="sub_category", hole=hole_size,
                         custom_data=["INR_Label"],
                         color_discrete_sequence=px.colors.qualitative.Safe
                     )
-                    fig_sub_pie.update_traces(
+                    fig_sub.update_traces(
                         textposition="inside", textinfo="percent+label",
                         hovertemplate="<b>%{label}</b><br>%{customdata[0]} (%{percent})<extra></extra>"
                     )
-                    st.plotly_chart(style_compact_chart(fig_sub_pie), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
                 else:
-                    fig_sub_bar = px.bar(
+                    fig_sub = px.bar(
                         sub_grp.tail(10), x="amount", y="sub_category", color="category", orientation="h",
                         text="INR_Label", labels={"sub_category": "", "amount": "₹"}
                     )
-                    fig_sub_bar.update_traces(hovertemplate="<b>%{y}</b>: %{text}<extra></extra>")
-                    st.plotly_chart(style_compact_chart(fig_sub_bar), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                    fig_sub.update_traces(hovertemplate="<b>%{y}</b>: %{text}<extra></extra>")
+                render_chart_with_popup("🎯 Sub-Category Expense", fig_sub, "m_sub", sub_tbl)
             else:
                 st.info("No expenses for this month.")
 
         ch3, ch4 = st.columns(2)
         with ch3:
-            st.markdown("**👨‍👩‍👦 Member Income**")
             if not inc_m_df.empty and inc_m_df["amount"].sum() > 0:
                 mem_inc_summary = inc_m_df.groupby("member", as_index=False)["amount"].sum()
                 mem_inc_summary["INR_Label"] = mem_inc_summary["amount"].apply(format_inr)
+                inc_tbl = mem_inc_summary.sort_values("amount", ascending=False)[["member", "INR_Label"]].rename(
+                    columns={"member": "Member", "INR_Label": "Income"}
+                )
                 if chart_style in ("Donut", "Solid Pie"):
-                    fig_inc_pie = px.pie(
+                    fig_inc = px.pie(
                         mem_inc_summary, values="amount", names="member", hole=hole_size,
                         custom_data=["INR_Label"],
                         color_discrete_sequence=px.colors.qualitative.Set2
                     )
-                    fig_inc_pie.update_traces(
+                    fig_inc.update_traces(
                         textposition="inside", textinfo="percent+label",
                         hovertemplate="<b>%{label}</b>: %{customdata[0]}<extra></extra>"
                     )
-                    st.plotly_chart(style_compact_chart(fig_inc_pie), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
                 else:
-                    fig_inc_bar = px.bar(
+                    fig_inc = px.bar(
                         mem_inc_summary, x="member", y="amount", color="member",
                         text="INR_Label", labels={"member": "", "amount": "₹"}
                     )
-                    fig_inc_bar.update_traces(hovertemplate="<b>%{x}</b>: %{text}<extra></extra>")
-                    st.plotly_chart(style_compact_chart(fig_inc_bar), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                    fig_inc.update_traces(hovertemplate="<b>%{x}</b>: %{text}<extra></extra>")
+                render_chart_with_popup("👨‍👩‍👦 Member Income", fig_inc, "m_inc", inc_tbl)
             else:
                 st.info("No income for this month.")
 
         with ch4:
-            st.markdown("**🏦 Expense by Bank**")
             if not exp_m_df.empty and exp_m_df["amount"].sum() > 0:
                 bank_grp = exp_m_df.groupby("bank", as_index=False)["amount"].sum()
                 bank_grp["INR_Label"] = bank_grp["amount"].apply(format_inr)
+                bank_tbl = bank_grp.sort_values("amount", ascending=False)[["bank", "INR_Label"]].rename(
+                    columns={"bank": "Bank", "INR_Label": "Expense"}
+                )
                 if chart_style in ("Donut", "Solid Pie"):
-                    fig_bank_pie = px.pie(
+                    fig_bank = px.pie(
                         bank_grp, values="amount", names="bank", hole=hole_size,
                         custom_data=["INR_Label"],
                         color_discrete_sequence=px.colors.qualitative.Bold
                     )
-                    fig_bank_pie.update_traces(
+                    fig_bank.update_traces(
                         textposition="inside", textinfo="percent+label",
                         hovertemplate="<b>%{label}</b>: %{customdata[0]}<extra></extra>"
                     )
-                    st.plotly_chart(style_compact_chart(fig_bank_pie), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
                 else:
-                    fig_bank_bar = px.bar(
+                    fig_bank = px.bar(
                         bank_grp, x="bank", y="amount", color="bank",
                         text="INR_Label", labels={"bank": "", "amount": "₹"}
                     )
-                    fig_bank_bar.update_traces(hovertemplate="<b>%{x}</b>: %{text}<extra></extra>")
-                    st.plotly_chart(style_compact_chart(fig_bank_bar), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                    fig_bank.update_traces(hovertemplate="<b>%{x}</b>: %{text}<extra></extra>")
+                render_chart_with_popup("🏦 Expense by Bank", fig_bank, "m_bank", bank_tbl)
             else:
                 st.info("No bank expenses.")
 
@@ -1852,7 +1976,6 @@ else:
                 key="loan_chart_style_radio"
             )
 
-        # Include both explicit Pending Loan entries (>0) AND Loan EMI payments
         loan_all_df = df[(df["pending_loan"] > 0) | (df["category"] == "Loans & EMIs") | (df["category"].isin(LOAN_CATEGORY_MAP.keys()))].copy()
 
         if loan_all_df.empty:
@@ -1883,6 +2006,7 @@ else:
                     open_delete_modal(cur_loan_df, scope_label=f"Loans in {sel_loan_month}")
 
             st.divider()
+            st.caption("💡 **Tip:** Double-tap any loan chart (or tap **🔍 Enlarge**) to pop it open in Fullscreen!")
 
             loan_hole = 0.45 if loan_chart_style == "Donut" else 0.0
             pending_only_df = cur_loan_df[cur_loan_df["pending_loan"] > 0]
@@ -1890,12 +2014,13 @@ else:
             val_col = "pending_loan" if not pending_only_df.empty else "amount"
             val_title = "Pending Loan" if val_col == "pending_loan" else "EMI Paid"
 
-            # 4 Compact Charts for Loans (Category-wise, Sub-category-wise, Member-wise, Month-over-Month)
             l_ch1, l_ch2 = st.columns(2)
             with l_ch1:
-                st.markdown(f"**📂 Category-Wise {val_title}**")
                 l_cat_grp = chart_source_df.groupby("Loan_Category", as_index=False)[val_col].sum().sort_values(val_col, ascending=True)
                 l_cat_grp["INR_Label"] = l_cat_grp[val_col].apply(format_inr)
+                lcat_tbl = l_cat_grp.sort_values(val_col, ascending=False)[["Loan_Category", "INR_Label"]].rename(
+                    columns={"Loan_Category": "Loan Category", "INR_Label": val_title}
+                )
                 if loan_chart_style in ("Donut", "Solid Pie"):
                     fig_lcat = px.pie(
                         l_cat_grp, values=val_col, names="Loan_Category", hole=loan_hole,
@@ -1906,19 +2031,20 @@ else:
                         textposition="inside", textinfo="percent+label",
                         hovertemplate="<b>%{label}</b><br>%{customdata[0]} (%{percent})<extra></extra>"
                     )
-                    st.plotly_chart(style_compact_chart(fig_lcat), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
                 else:
-                    fig_lcat_bar = px.bar(
+                    fig_lcat = px.bar(
                         l_cat_grp, x=val_col, y="Loan_Category", color="Loan_Category", orientation="h",
                         text="INR_Label", labels={"Loan_Category": "", val_col: "₹"}
                     )
-                    fig_lcat_bar.update_traces(hovertemplate="<b>%{y}</b>: %{text}<extra></extra>")
-                    st.plotly_chart(style_compact_chart(fig_lcat_bar), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                    fig_lcat.update_traces(hovertemplate="<b>%{y}</b>: %{text}<extra></extra>")
+                render_chart_with_popup(f"📂 Category {val_title}", fig_lcat, "l_cat", lcat_tbl)
 
             with l_ch2:
-                st.markdown(f"**🎯 Sub-Category {val_title}**")
                 l_sub_grp = chart_source_df.groupby(["sub_category", "Loan_Category"], as_index=False)[val_col].sum().sort_values(val_col, ascending=True)
                 l_sub_grp["INR_Label"] = l_sub_grp[val_col].apply(format_inr)
+                lsub_tbl = l_sub_grp.sort_values(val_col, ascending=False)[["sub_category", "Loan_Category", "INR_Label"]].rename(
+                    columns={"sub_category": "Loan Name", "Loan_Category": "Category", "INR_Label": val_title}
+                )
                 if loan_chart_style in ("Donut", "Solid Pie"):
                     fig_lsub = px.pie(
                         l_sub_grp, values=val_col, names="sub_category", hole=loan_hole,
@@ -1929,20 +2055,21 @@ else:
                         textposition="inside", textinfo="percent+label",
                         hovertemplate="<b>%{label}</b><br>%{customdata[0]} (%{percent})<extra></extra>"
                     )
-                    st.plotly_chart(style_compact_chart(fig_lsub), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
                 else:
-                    fig_lsub_bar = px.bar(
+                    fig_lsub = px.bar(
                         l_sub_grp, x=val_col, y="sub_category", color="Loan_Category", orientation="h",
                         text="INR_Label", labels={"sub_category": "", val_col: "₹"}
                     )
-                    fig_lsub_bar.update_traces(hovertemplate="<b>%{y}</b>: %{text}<extra></extra>")
-                    st.plotly_chart(style_compact_chart(fig_lsub_bar), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                    fig_lsub.update_traces(hovertemplate="<b>%{y}</b>: %{text}<extra></extra>")
+                render_chart_with_popup(f"🎯 Sub-Category {val_title}", fig_lsub, "l_sub", lsub_tbl)
 
             l_ch3, l_ch4 = st.columns(2)
             with l_ch3:
-                st.markdown(f"**👨‍👩‍👦 Member-Wise {val_title}**")
                 l_mem_grp = chart_source_df.groupby("member", as_index=False)[val_col].sum()
                 l_mem_grp["INR_Label"] = l_mem_grp[val_col].apply(format_inr)
+                lmem_tbl = l_mem_grp.sort_values(val_col, ascending=False)[["member", "INR_Label"]].rename(
+                    columns={"member": "Member", "INR_Label": val_title}
+                )
                 if loan_chart_style in ("Donut", "Solid Pie"):
                     fig_lmem = px.pie(
                         l_mem_grp, values=val_col, names="member", hole=loan_hole,
@@ -1953,30 +2080,31 @@ else:
                         textposition="inside", textinfo="percent+label",
                         hovertemplate="<b>%{label}</b>: %{customdata[0]}<extra></extra>"
                     )
-                    st.plotly_chart(style_compact_chart(fig_lmem), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
                 else:
-                    fig_lmem_bar = px.bar(
+                    fig_lmem = px.bar(
                         l_mem_grp, x="member", y=val_col, color="member",
                         text="INR_Label", labels={"member": "", val_col: "₹"}
                     )
-                    fig_lmem_bar.update_traces(hovertemplate="<b>%{x}</b>: %{text}<extra></extra>")
-                    st.plotly_chart(style_compact_chart(fig_lmem_bar), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                    fig_lmem.update_traces(hovertemplate="<b>%{x}</b>: %{text}<extra></extra>")
+                render_chart_with_popup(f"👨‍👩‍👦 Member {val_title}", fig_lmem, "l_mem", lmem_tbl)
 
             with l_ch4:
-                st.markdown("**📉 Month-Wise Loan Trend**")
                 mom_loan = loan_all_df.groupby("Month_Key", as_index=False).agg(
                     Pending=("pending_loan", "sum"),
                     EMI=("amount", "sum")
                 ).sort_values("Month_Key")
                 trend_col = "Pending" if mom_loan["Pending"].sum() > 0 else "EMI"
                 mom_loan["INR_Label"] = mom_loan[trend_col].apply(format_inr)
+                ltrend_tbl = mom_loan[["Month_Key", "INR_Label"]].rename(
+                    columns={"Month_Key": "Month", "INR_Label": trend_col}
+                )
                 fig_loan_trend = px.bar(
                     mom_loan, x="Month_Key", y=trend_col, text="INR_Label",
                     color_discrete_sequence=["#e67e22"],
                     labels={"Month_Key": "", trend_col: "₹"}
                 )
                 fig_loan_trend.update_traces(hovertemplate="<b>%{x}</b>: %{text}<extra></extra>")
-                st.plotly_chart(style_compact_chart(fig_loan_trend), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                render_chart_with_popup("📉 Month-Wise Loan Trend", fig_loan_trend, "l_trend", ltrend_tbl)
 
             st.markdown("**📋 Itemized Loans & EMIs Table**")
             loan_list_disp = cur_loan_df[["Loan_Category", "sub_category", "bank", "member", "amount", "pending_loan", "details"]].copy()
@@ -2005,31 +2133,36 @@ else:
         a4.metric(f"Pending Loan ({latest_month_key})", format_inr(latest_pending_loan))
 
         st.divider()
+        st.caption("💡 **Tip:** Double-tap any trend chart (or tap **🔍 Enlarge**) to pop it open in Fullscreen!")
 
-        st.markdown("**📊 Monthly Income vs. Expense**")
         active_df = df[df["t_type"].isin(["Income", "Expense"])]
         mom_df = active_df.groupby(["Month_Key", "t_type"], as_index=False)["amount"].sum().sort_values("Month_Key")
         mom_df["INR_Label"] = mom_df["amount"].apply(format_inr)
+        mom_tbl = mom_df[["Month_Key", "t_type", "INR_Label"]].rename(
+            columns={"Month_Key": "Month", "t_type": "Type", "INR_Label": "Amount"}
+        )
         fig_mom = px.bar(
             mom_df, x="Month_Key", y="amount", color="t_type", barmode="group", text="INR_Label",
             color_discrete_map={"Income": "#2ecc71", "Expense": "#e74c3c"},
             labels={"Month_Key": "", "amount": "₹", "t_type": ""}
         )
         fig_mom.update_traces(hovertemplate="<b>%{x}</b><br>%{fullData.name}: %{text}<extra></extra>")
-        st.plotly_chart(style_compact_chart(fig_mom, show_legend=True), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+        render_chart_with_popup("📊 Monthly Income vs. Expense", fig_mom, "t_mom", mom_tbl, show_inline_legend=True)
 
-        st.markdown("**📈 Sub-Category Spending Trend**")
         all_exp_df = df[df["t_type"] == "Expense"]
         if not all_exp_df.empty:
             mom_sub = all_exp_df.groupby(["Month_Key", "sub_category"], as_index=False)["amount"].sum().sort_values("Month_Key")
             mom_sub["INR_Label"] = mom_sub["amount"].apply(format_inr)
+            mom_sub_tbl = mom_sub.sort_values(["Month_Key", "amount"], ascending=[False, False])[["Month_Key", "sub_category", "INR_Label"]].rename(
+                columns={"Month_Key": "Month", "sub_category": "Sub-category", "INR_Label": "Amount"}
+            )
             fig_mom_sub = px.bar(
                 mom_sub, x="Month_Key", y="amount", color="sub_category",
                 custom_data=["INR_Label"],
                 labels={"Month_Key": "", "amount": "₹", "sub_category": ""}
             )
             fig_mom_sub.update_traces(hovertemplate="<b>%{x}</b>: %{customdata[0]}<extra></extra>")
-            st.plotly_chart(style_compact_chart(fig_mom_sub), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+            render_chart_with_popup("📈 Sub-Category Spending Trend", fig_mom_sub, "t_sub", mom_sub_tbl)
 
     # ------------------------------------------
     # TAB 4: COMPLETE HISTORY WITH RICH MULTI-FILTERS
@@ -2050,7 +2183,6 @@ else:
                 open_recycle_bin_modal()
 
         st.markdown("##### 🔍 Filter Complete History")
-        # Row 1 Filters: Budget Month & Bank
         hf_r1_c1, hf_r1_c2 = st.columns(2)
         with hf_r1_c1:
             all_budget_months = list(df.sort_values("Month_Key", ascending=False)["Month_Key"].unique())
@@ -2069,7 +2201,6 @@ else:
                 key="hist_f_bank"
             )
 
-        # Row 2 Filters: Transaction Type & Category
         hf_r2_c1, hf_r2_c2 = st.columns(2)
         with hf_r2_c1:
             all_types = list(df["t_type"].unique())
@@ -2088,7 +2219,6 @@ else:
                 key="hist_f_cat"
             )
 
-        # Row 3 Filters: Sub-category & Member + Search
         hf_r3_c1, hf_r3_c2 = st.columns(2)
         with hf_r3_c1:
             avail_subs = sorted(list(df[df["category"].isin(hist_cats)]["sub_category"].unique()))
@@ -2128,7 +2258,6 @@ else:
                 hist_df["sub_category"].fillna("").str.lower().str.contains(q)
             ]
 
-        # Live Filtered Summary Metrics
         f_inc = hist_df[hist_df["t_type"] == "Income"]["amount"].sum()
         f_exp = hist_df[hist_df["t_type"] == "Expense"]["amount"].sum()
         f_loan = hist_df["pending_loan"].sum()
