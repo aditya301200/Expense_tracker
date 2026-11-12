@@ -13,7 +13,7 @@ except ImportError:
     psycopg2 = None
 
 # ==========================================
-# 1. PAGE CONFIGURATION & RESPONSIVE CSS
+# 1. PAGE CONFIGURATION & MOBILE-FIRST CSS
 # ==========================================
 st.set_page_config(
     page_title="Das Family Expense & Loan Tracker",
@@ -23,19 +23,27 @@ st.set_page_config(
 )
 
 # Responsive CSS:
-# - Desktop/Laptop (> 768px): Full 48px button height & spacious layout
-# - Mobile Phone (<= 768px, e.g., Samsung S25+): Compact, short buttons & tight padding
+# - Fixes top header clipping on mobile
+# - Forces 2-column side-by-side KPI metrics & multi-column button grid on phone
+# - Keeps desktop/laptop layout spacious
 st.markdown("""
 <style>
     .block-container {
-        padding-top: 1.2rem !important;
+        padding-top: 2.8rem !important;
         padding-bottom: 2rem !important;
         padding-left: 0.8rem !important;
         padding-right: 0.8rem !important;
     }
-    /* Desktop / Laptop Button Styling (Stays as-is) */
+    .app-top-title {
+        font-size: 1.55rem;
+        font-weight: 700;
+        margin-top: 0.2rem;
+        margin-bottom: 0.6rem;
+        line-height: 1.25;
+    }
+    /* Desktop / Laptop Button Styling */
     .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
-        min-height: 48px !important;
+        min-height: 44px !important;
         font-weight: 600 !important;
         border-radius: 10px !important;
     }
@@ -55,29 +63,68 @@ st.markdown("""
 
     /* Mobile Phone Overrides (Samsung S25+ & screens <= 768px) */
     @media (max-width: 768px) {
-        .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
-            min-height: 32px !important;
-            height: 34px !important;
-            padding: 4px 12px !important;
-            font-size: 0.80rem !important;
-            border-radius: 8px !important;
-            width: auto !important;
+        .block-container {
+            padding-top: 2.6rem !important;
+            padding-left: 0.45rem !important;
+            padding-right: 0.45rem !important;
         }
+        .app-top-title {
+            font-size: 1.18rem !important;
+            margin-top: 0.1rem !important;
+            margin-bottom: 0.45rem !important;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        /* Keep horizontal blocks in a 2-column or 3-column grid instead of 1-column vertical stack */
+        div[data-testid="stHorizontalBlock"] {
+            display: flex !important;
+            flex-direction: row !important;
+            flex-wrap: wrap !important;
+            gap: 6px !important;
+        }
+        div[data-testid="stHorizontalBlock"] > div[data-testid="column"],
+        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+            flex: 1 1 calc(50% - 6px) !important;
+            min-width: calc(50% - 6px) !important;
+            max-width: calc(50% - 6px) !important;
+        }
+        /* Compact Buttons on Phone */
+        .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
+            min-height: 34px !important;
+            height: 34px !important;
+            padding: 2px 8px !important;
+            font-size: 0.76rem !important;
+            border-radius: 8px !important;
+            width: 100% !important;
+        }
+        /* Compact 2-Column KPI Cards on Phone */
         div[data-testid="stMetric"] {
             padding: 8px 10px !important;
+            border-radius: 10px !important;
+        }
+        div[data-testid="stMetricLabel"] p {
+            font-size: 0.75rem !important;
         }
         div[data-testid="stMetricValue"] {
-            font-size: 1.1rem !important;
+            font-size: 1.05rem !important;
+        }
+        div[data-testid="stMetricDelta"] {
+            font-size: 0.72rem !important;
         }
         button[data-baseweb="tab"] {
-            font-size: 0.82rem !important;
-            padding: 6px 10px !important;
+            font-size: 0.80rem !important;
+            padding: 6px 8px !important;
+        }
+        h3, .stSubheader {
+            font-size: 1.0rem !important;
         }
     }
 </style>
 """, unsafe_allow_html=True)
 
 PLOTLY_MOBILE_CONFIG = {"displayModeBar": False, "responsive": True}
+CHART_HEIGHT = 250  # Compact chart height for mobile & desktop
 RECYCLE_BIN_RETENTION_DAYS = 3
 SALARY_CUTOFF_DAY = 24  # Salaries credited on or after the 24th count toward next month's budget
 
@@ -193,6 +240,17 @@ def get_effective_accounting_date(row):
     return pd.Timestamp(year=dt.year, month=dt.month, day=1)
 
 
+def style_compact_chart(fig, show_legend=False):
+    """Applies compact mobile-friendly height and tight margins to any Plotly chart."""
+    fig.update_layout(
+        height=CHART_HEIGHT,
+        margin=dict(t=8, b=8, l=8, r=8),
+        showlegend=show_legend,
+        font=dict(size=11)
+    )
+    return fig
+
+
 def inject_live_indian_words_js():
     """Injects a keystroke listener into the popup modal for live Indian words under number inputs."""
     components.html(
@@ -245,7 +303,7 @@ def inject_live_indian_words_js():
                     if (!helper) {
                         helper = parentDoc.createElement('div');
                         helper.className = 'live-inr-words';
-                        helper.style.cssText = 'color: #2ecc71; font-size: 0.84rem; font-weight: 600; margin-top: 4px; min-height: 1.2rem; transition: all 0.1s ease;';
+                        helper.style.cssText = 'color: #2ecc71; font-size: 0.80rem; font-weight: 600; margin-top: 3px; min-height: 1.1rem; transition: all 0.1s ease;';
                         wrapper.appendChild(helper);
                     }
 
@@ -289,7 +347,7 @@ def check_pin():
     if st.session_state.get("authenticated", False):
         return True
 
-    st.markdown("### 🔒 Das Family Tracker")
+    st.markdown('<div class="app-top-title">🔒 Das Family Tracker</div>', unsafe_allow_html=True)
     pin_input = st.text_input("Enter Family PIN:", type="password", placeholder="Tap to enter PIN")
     if st.button("🔓 Unlock Dashboard", type="primary", use_container_width=True):
         if pin_input == str(st.secrets["APP_PIN"]):
@@ -407,6 +465,112 @@ def init_db_once():
 
 init_db_once()
 
+# ==========================================
+# 5. CONSTANTS, LOAN CATEGORIES & AUTO-MAPPERS
+# ==========================================
+BANK_OPTIONS = ["SBI", "HDFC", "Cash / Other"]
+EARNING_MEMBERS = ["Amal Das", "Abhijit Das", "Aditya Das", "Other"]
+EXPENSE_MEMBERS = ["Amal Das", "Abhijit Das", "Aditya Das", "Shared / Family"]
+
+# Dedicated Loan Categories & Sub-Categories for the Pending Loan Tracker
+LOAN_CATEGORY_MAP = {
+    "Gold Loan": ["Gold Loan", "Gold Loan 1", "Gold Loan 2", "Manappuram Gold Loan"],
+    "Education Loan": ["EDU loan", "EDU loan 1", "EDU loan 2"],
+    "Consumer & Durable Loan": ["Consumer loan", "Consumer loan 1", "Consumer loan 2", "Bajaj Consumer Loan"],
+    "Bank & Personal Loan": ["HDFC loan", "Personal Loan", "Bandhan Bank Loan", "Other Loan / EMI"],
+    "Credit Card & Other Loan": ["HDFC CC Loan", "AXIS CC Loan", "Vehicle / Bike Loan", "Custom Loan"]
+}
+
+EXPENSE_CATEGORY_MAP = {
+    "Loans & EMIs": ["Gold Loan", "Consumer loan", "EDU loan", "HDFC loan", "Other Loan / EMI"],
+    "Credit Card Bills": ["HDFC CC bill", "AXIS CC bill", "Other CC bill"],
+    "Utilities & Bills": ["Light Bill", "Gas Bill", "Mobile / Internet Bill", "Water / Other Bill"],
+    "Insurance & Investments": ["LIC", "Mutual Fund", "Fixed Deposit / PPF", "Health / Vehicle Insurance"],
+    "Groceries & Food": ["Grocery", "Vegetables / Fish / Meat", "Dining / HungerBox", "Tea / Snacks"],
+    "Housing & Rent": ["Home rent", "House Maintenance", "Appliances & Repairs"],
+    "Medical & Healthcare": ["Medicine Bill", "Doctor / Consultation", "Diagnostic / Lab Test"],
+    "Transport & Fuel": ["Fuel / IndianOil", "Public Transport / Cab", "Car / Bike Maintenance"],
+    "Shopping & Miscellaneous": ["Shopping & Personal", "Family Event / Gift", "Miscellaneous"]
+}
+
+INCOME_CATEGORY_MAP = {
+    "Salary & Regular Income": ["Monthly Salary", "Bonus / Incentives", "Pension / Family Contribution"],
+    "Business & Freelance": ["Business / Freelance", "Rental / Side Income"],
+    "Investment Returns": ["Interest / Dividends", "Mutual Fund / Maturity", "Other Income"],
+    "Other Income": ["Personal Loan Disbursed", "Other Income"]
+}
+
+SELF_TRANSFER_CATEGORY_MAP = {
+    "Self Transfer (Internal)": [
+        "Self Transfer (SBI <-> HDFC)",
+        "FD Sweep-In (Internal)",
+        "Self / Wallet Reversal",
+        "Reversal / Mandate Test"
+    ]
+}
+
+def infer_loan_category(sub_cat_name, existing_cat=""):
+    """Maps any loan sub-category (e.g., 'Gold Loan', 'EDU loan') into a specific Loan Category for Loan Charts."""
+    if existing_cat in LOAN_CATEGORY_MAP:
+        return existing_cat
+    s = str(sub_cat_name or "").lower()
+    if "gold" in s or "manappur" in s:
+        return "Gold Loan"
+    if "edu" in s or "student" in s or "college" in s:
+        return "Education Loan"
+    if "consum" in s or "bajaj" in s or "appliance" in s:
+        return "Consumer & Durable Loan"
+    if "cc" in s or "card" in s or "bike" in s or "car" in s:
+        return "Credit Card & Other Loan"
+    return "Bank & Personal Loan"
+
+def get_category_map_for_type(t_type):
+    if t_type == "Income":
+        return INCOME_CATEGORY_MAP
+    if t_type == "Self Transfer":
+        return SELF_TRANSFER_CATEGORY_MAP
+    return EXPENSE_CATEGORY_MAP
+
+def infer_parent_category(sub_cat_name, t_type="Expense"):
+    if t_type == "Self Transfer":
+        return "Self Transfer (Internal)"
+
+    s_clean = str(sub_cat_name or "").strip().lower()
+    target_map = get_category_map_for_type(t_type)
+
+    for parent_cat, subs in target_map.items():
+        for sub in subs:
+            if sub.lower() == s_clean:
+                return parent_cat
+
+    if t_type == "Income":
+        if "sal" in s_clean or "bonus" in s_clean or "pension" in s_clean or "contribution" in s_clean:
+            return "Salary & Regular Income"
+        if "bus" in s_clean or "free" in s_clean or "rent" in s_clean:
+            return "Business & Freelance"
+        if "disburs" in s_clean:
+            return "Other Income"
+        return "Investment Returns"
+
+    if "loan" in s_clean or "emi" in s_clean:
+        return "Loans & EMIs"
+    if "cc" in s_clean or "card" in s_clean:
+        return "Credit Card Bills"
+    if "bill" in s_clean or "light" in s_clean or "gas" in s_clean or "recharge" in s_clean:
+        return "Utilities & Bills"
+    if "lic" in s_clean or "mutual" in s_clean or "sip" in s_clean or "insurance" in s_clean or "fixed deposit" in s_clean:
+        return "Insurance & Investments"
+    if "grocer" in s_clean or "food" in s_clean or "veg" in s_clean or "dining" in s_clean or "hungerbox" in s_clean:
+        return "Groceries & Food"
+    if "rent" in s_clean or "home" in s_clean or "house" in s_clean:
+        return "Housing & Rent"
+    if "med" in s_clean or "doctor" in s_clean:
+        return "Medical & Healthcare"
+    if "fuel" in s_clean or "petrol" in s_clean or "oil" in s_clean or "transport" in s_clean or "maintenance" in s_clean:
+        return "Transport & Fuel"
+
+    return "Shopping & Miscellaneous"
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_data():
     """Loads active transactions and shifts end-of-month salaries (day >= 24) into next month's budget."""
@@ -424,8 +588,8 @@ def load_data():
         df["amount"] = df["amount"].astype(float)
         df["pending_loan"] = df["pending_loan"].fillna(0.0).astype(float)
         df["sub_category"] = df["sub_category"].fillna("Miscellaneous")
+        df["Loan_Category"] = df.apply(lambda r: infer_loan_category(r["sub_category"], r["category"]), axis=1)
 
-        # Compute Effective Accounting Month (Shifts last-working-day salaries to Next Month!)
         df["Effective_Date"] = df.apply(get_effective_accounting_date, axis=1)
         df["Month_Key"] = df["Effective_Date"].dt.strftime("%Y-%m")
         df["Month_Label"] = df["Effective_Date"].dt.strftime("%B %Y (%Y-%m)")
@@ -445,7 +609,6 @@ def load_data():
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_recycle_bin():
-    """Purges items > 3 days old and loads remaining Recycle Bin items."""
     conn = get_connection()
     purge_expired_recycle_bin(conn)
     bin_df = pd.read_sql_query(
@@ -601,89 +764,6 @@ def permanent_delete_transactions(t_ids):
         conn.close()
     clear_all_caches()
 
-# ==========================================
-# 5. CONSTANTS, BANKS, CATEGORIES & AUTO-MAPPER
-# ==========================================
-BANK_OPTIONS = ["SBI", "HDFC", "Cash / Other"]
-EARNING_MEMBERS = ["Amal Das", "Abhijit Das", "Aditya Das", "Other"]
-EXPENSE_MEMBERS = ["Amal Das", "Abhijit Das", "Aditya Das", "Shared / Family"]
-
-EXPENSE_CATEGORY_MAP = {
-    "Loans & EMIs": ["Gold Loan", "Consumer loan", "EDU loan", "HDFC loan", "Other Loan / EMI"],
-    "Credit Card Bills": ["HDFC CC bill", "AXIS CC bill", "Other CC bill"],
-    "Utilities & Bills": ["Light Bill", "Gas Bill", "Mobile / Internet Bill", "Water / Other Bill"],
-    "Insurance & Investments": ["LIC", "Mutual Fund", "Fixed Deposit / PPF", "Health / Vehicle Insurance"],
-    "Groceries & Food": ["Grocery", "Vegetables / Fish / Meat", "Dining / HungerBox", "Tea / Snacks"],
-    "Housing & Rent": ["Home rent", "House Maintenance", "Appliances & Repairs"],
-    "Medical & Healthcare": ["Medicine Bill", "Doctor / Consultation", "Diagnostic / Lab Test"],
-    "Transport & Fuel": ["Fuel / IndianOil", "Public Transport / Cab", "Car / Bike Maintenance"],
-    "Shopping & Miscellaneous": ["Shopping & Personal", "Family Event / Gift", "Miscellaneous"]
-}
-
-INCOME_CATEGORY_MAP = {
-    "Salary & Regular Income": ["Monthly Salary", "Bonus / Incentives", "Pension / Family Contribution"],
-    "Business & Freelance": ["Business / Freelance", "Rental / Side Income"],
-    "Investment Returns": ["Interest / Dividends", "Mutual Fund / Maturity", "Other Income"],
-    "Other Income": ["Personal Loan Disbursed", "Other Income"]
-}
-
-SELF_TRANSFER_CATEGORY_MAP = {
-    "Self Transfer (Internal)": [
-        "Self Transfer (SBI <-> HDFC)",
-        "FD Sweep-In (Internal)",
-        "Self / Wallet Reversal",
-        "Reversal / Mandate Test"
-    ]
-}
-
-def get_category_map_for_type(t_type):
-    if t_type == "Income":
-        return INCOME_CATEGORY_MAP
-    if t_type == "Self Transfer":
-        return SELF_TRANSFER_CATEGORY_MAP
-    return EXPENSE_CATEGORY_MAP
-
-def infer_parent_category(sub_cat_name, t_type="Expense"):
-    """Maps a Sub-category from CSV/Excel to its Parent Category (defaults to 'Shopping & Miscellaneous')."""
-    if t_type == "Self Transfer":
-        return "Self Transfer (Internal)"
-
-    s_clean = str(sub_cat_name or "").strip().lower()
-    target_map = get_category_map_for_type(t_type)
-
-    for parent_cat, subs in target_map.items():
-        for sub in subs:
-            if sub.lower() == s_clean:
-                return parent_cat
-
-    if t_type == "Income":
-        if "sal" in s_clean or "bonus" in s_clean or "pension" in s_clean or "contribution" in s_clean:
-            return "Salary & Regular Income"
-        if "bus" in s_clean or "free" in s_clean or "rent" in s_clean:
-            return "Business & Freelance"
-        if "disburs" in s_clean:
-            return "Other Income"
-        return "Investment Returns"
-
-    if "loan" in s_clean or "emi" in s_clean:
-        return "Loans & EMIs"
-    if "cc" in s_clean or "card" in s_clean:
-        return "Credit Card Bills"
-    if "bill" in s_clean or "light" in s_clean or "gas" in s_clean or "recharge" in s_clean:
-        return "Utilities & Bills"
-    if "lic" in s_clean or "mutual" in s_clean or "sip" in s_clean or "insurance" in s_clean or "fixed deposit" in s_clean:
-        return "Insurance & Investments"
-    if "grocer" in s_clean or "food" in s_clean or "veg" in s_clean or "dining" in s_clean or "hungerbox" in s_clean:
-        return "Groceries & Food"
-    if "rent" in s_clean or "home" in s_clean or "house" in s_clean:
-        return "Housing & Rent"
-    if "med" in s_clean or "doctor" in s_clean:
-        return "Medical & Healthcare"
-    if "fuel" in s_clean or "petrol" in s_clean or "oil" in s_clean or "transport" in s_clean or "maintenance" in s_clean:
-        return "Transport & Fuel"
-
-    return "Shopping & Miscellaneous"
-
 df = load_data()
 bin_df = load_recycle_bin()
 
@@ -692,17 +772,19 @@ bin_df = load_recycle_bin()
 # ==========================================
 @st.dialog("➕ Add New Expense / Income / Transfer", width="large")
 def open_add_modal():
-    top_col1, top_col2, top_col3 = st.columns([1.3, 1, 1.3])
+    top_col1, top_col2 = st.columns(2)
     with top_col1:
         t_type = st.radio("Transaction Type", ["Expense", "Income", "Self Transfer"], horizontal=True)
     with top_col2:
         bank = st.selectbox("Bank Account", BANK_OPTIONS)
-    with top_col3:
+
+    cat_col1, cat_col2 = st.columns(2)
+    with cat_col1:
         cat_map = get_category_map_for_type(t_type)
         category = st.selectbox("Category", list(cat_map.keys()))
-
-    sub_options = cat_map[category] + ["➕ Custom Sub-category..."]
-    selected_sub = st.selectbox("Sub-category", sub_options)
+    with cat_col2:
+        sub_options = cat_map[category] + ["➕ Custom Sub-category..."]
+        selected_sub = st.selectbox("Sub-category", sub_options)
 
     custom_sub = ""
     if selected_sub == "➕ Custom Sub-category...":
@@ -713,19 +795,19 @@ def open_add_modal():
         t_date = st.date_input("Date", date.today())
         if t_type == "Income" and selected_sub == "Monthly Salary" and t_date.day >= SALARY_CUTOFF_DAY:
             next_m = (t_date.replace(day=28) + timedelta(days=10)).strftime("%B %Y")
-            st.caption(f"📅 **End-of-Month Salary:** Will automatically count toward **{next_m}**'s budget!")
+            st.caption(f"📅 **End-of-Month Salary:** Counts toward **{next_m}**!")
     with f_col2:
         if t_type == "Income":
-            member = st.selectbox("Earning Family Member", EARNING_MEMBERS, index=2)
+            member = st.selectbox("Earning Member", EARNING_MEMBERS, index=2)
         else:
-            member = st.selectbox("Paid By / Account Holder", EXPENSE_MEMBERS, index=2)
+            member = st.selectbox("Paid By / Member", EXPENSE_MEMBERS, index=2)
 
     a_col1, a_col2 = st.columns(2)
     with a_col1:
         amount = st.number_input(
             "Amount (₹)",
             min_value=0.0, value=None,
-            placeholder="Tap to type amount (e.g., 1500)", step=100.0,
+            placeholder="Tap to type (e.g., 1500)", step=100.0,
             key="add_amount_input"
         )
         if amount and amount > 0:
@@ -734,7 +816,7 @@ def open_add_modal():
     with a_col2:
         if t_type == "Expense":
             pending_loan = st.number_input(
-                "Pending Loan Till Date (₹) [Optional]",
+                "Pending Loan Balance (₹) [Optional]",
                 min_value=0.0, value=None,
                 placeholder="Tap if Loan (e.g., 318885)", step=500.0,
                 key="add_loan_input"
@@ -765,6 +847,162 @@ def open_add_modal():
             )
             st.toast(f"✅ Saved [{bank}] {final_sub}: {format_inr(clean_amount, 2)}", icon="💰")
             st.rerun()
+
+
+@st.dialog("🏦 Add / Update Month-Wise Pending Loans", width="large")
+def open_pending_loan_modal():
+    st.caption(
+        "Log a single Pending Loan with its Loan Category, or bulk-update all your active loans for the month at once!"
+    )
+    mode_tab1, mode_tab2 = st.tabs(["➕ Add Single Pending Loan", "📋 Bulk Month-Wise Loan Sheet"])
+
+    # Mode 1: Add a Single Pending Loan with Loan Category
+    with mode_tab1:
+        l_c1, l_c2 = st.columns(2)
+        with l_c1:
+            loan_date = st.date_input("Loan Month / Date", date.today(), key="single_loan_dt")
+            loan_cat = st.selectbox("Loan Category", list(LOAN_CATEGORY_MAP.keys()), key="single_loan_cat")
+        with l_c2:
+            loan_bank = st.selectbox("Bank / Lender", BANK_OPTIONS, key="single_loan_bank")
+            sub_opts = LOAN_CATEGORY_MAP[loan_cat] + ["➕ Custom Loan Name..."]
+            loan_sub_sel = st.selectbox("Loan Sub-Category / Name", sub_opts, key="single_loan_sub")
+
+        cust_loan_name = ""
+        if loan_sub_sel == "➕ Custom Loan Name...":
+            cust_loan_name = st.text_input("Enter Custom Loan Name", placeholder="e.g., Car Loan SBI")
+
+        l_c3, l_c4 = st.columns(2)
+        with l_c3:
+            loan_holder = st.selectbox("Loan Holder (Member)", EXPENSE_MEMBERS, index=2, key="single_loan_mem")
+            emi_paid_val = st.number_input(
+                "Monthly EMI Paid (₹) [Optional, can be 0]",
+                min_value=0.0, value=None,
+                placeholder="e.g., 7800 (or leave blank)", step=500.0,
+                key="single_loan_emi"
+            )
+        with l_c4:
+            pending_bal_val = st.number_input(
+                "Pending Loan Balance Till Date (₹) *",
+                min_value=0.0, value=None,
+                placeholder="e.g., 318885", step=1000.0,
+                key="single_loan_bal"
+            )
+            loan_notes = st.text_input("Loan Details / Account Note", placeholder="e.g., Education Loan 1")
+
+        inject_live_indian_words_js()
+
+        if st.button("💾 Save Pending Loan Entry", type="primary", use_container_width=True):
+            final_loan_sub = cust_loan_name.strip() if loan_sub_sel == "➕ Custom Loan Name..." else loan_sub_sel
+            clean_emi = float(emi_paid_val) if emi_paid_val is not None else 0.0
+            clean_bal = float(pending_bal_val) if pending_bal_val is not None else 0.0
+
+            if not final_loan_sub:
+                st.error("⚠️ Please provide a loan name.")
+            elif clean_bal <= 0 and clean_emi <= 0:
+                st.error("⚠️ Please enter a Pending Loan Balance greater than ₹0.")
+            else:
+                add_transaction(
+                    loan_date, loan_bank, "Expense", loan_cat,
+                    final_loan_sub, loan_holder, clean_emi, clean_bal,
+                    loan_notes.strip() or f"{loan_cat} Balance"
+                )
+                st.toast(f"✅ Saved {final_loan_sub} Pending Loan: {format_inr(clean_bal)}", icon="🏦")
+                st.rerun()
+
+    # Mode 2: Bulk Month-Wise Loan Sheet (Pre-populated with your standard loans or previous month's loans!)
+    with mode_tab2:
+        b_c1, b_c2 = st.columns(2)
+        with b_c1:
+            bulk_loan_date = st.date_input("Target Month Date", date.today().replace(day=1), key="bulk_loan_dt")
+        with b_c2:
+            loan_hist_df = df[df["pending_loan"] > 0] if not df.empty else pd.DataFrame()
+            if not loan_hist_df.empty:
+                prev_loan_months = ["📋 Standard Das Family Loan Template"] + list(
+                    loan_hist_df.sort_values("Month_Key", ascending=False)["Month_Label"].unique()
+                )
+            else:
+                prev_loan_months = ["📋 Standard Das Family Loan Template"]
+            template_source = st.selectbox("Load Loan List From:", prev_loan_months, key="bulk_loan_src")
+
+        if template_source == "📋 Standard Das Family Loan Template":
+            seed_loans = pd.DataFrame([
+                {"Save": True, "Bank": "SBI", "Loan Category": "Gold Loan", "Loan Sub-category": "Gold Loan 1", "Member": "Amal Das", "EMI Paid (₹)": 0.0, "Pending Loan (₹)": 79489.0, "Details": "Gold Loan 1"},
+                {"Save": True, "Bank": "SBI", "Loan Category": "Gold Loan", "Loan Sub-category": "Gold Loan 2", "Member": "Amal Das", "EMI Paid (₹)": 0.0, "Pending Loan (₹)": 23519.0, "Details": "Gold Loan 2"},
+                {"Save": True, "Bank": "SBI", "Loan Category": "Consumer & Durable Loan", "Loan Sub-category": "Consumer loan 1", "Member": "Aditya Das", "EMI Paid (₹)": 1736.0, "Pending Loan (₹)": 75694.0, "Details": "Consumer Loan 1"},
+                {"Save": True, "Bank": "SBI", "Loan Category": "Consumer & Durable Loan", "Loan Sub-category": "Consumer loan 2", "Member": "Amal Das", "EMI Paid (₹)": 0.0, "Pending Loan (₹)": 13888.0, "Details": "Consumer Loan 2"},
+                {"Save": True, "Bank": "SBI", "Loan Category": "Education Loan", "Loan Sub-category": "EDU loan 1", "Member": "Aditya Das", "EMI Paid (₹)": 0.0, "Pending Loan (₹)": 318885.0, "Details": "Education Loan 1"},
+                {"Save": True, "Bank": "SBI", "Loan Category": "Education Loan", "Loan Sub-category": "EDU loan 2", "Member": "Aditya Das", "EMI Paid (₹)": 0.0, "Pending Loan (₹)": 401647.0, "Details": "Education Loan 2"},
+                {"Save": True, "Bank": "HDFC", "Loan Category": "Bank & Personal Loan", "Loan Sub-category": "HDFC loan", "Member": "Aditya Das", "EMI Paid (₹)": 9406.0, "Pending Loan (₹)": 313834.0, "Details": "HDFC Personal Loan"},
+            ])
+        else:
+            prev_df = loan_hist_df[loan_hist_df["Month_Label"] == template_source].sort_values("id")
+            seed_loans = pd.DataFrame({
+                "Save": True,
+                "Bank": prev_df["bank"],
+                "Loan Category": prev_df["Loan_Category"],
+                "Loan Sub-category": prev_df["sub_category"],
+                "Member": prev_df["member"],
+                "EMI Paid (₹)": prev_df["amount"],
+                "Pending Loan (₹)": prev_df["pending_loan"],
+                "Details": prev_df["details"].fillna("")
+            })
+
+        edited_loans = st.data_editor(
+            seed_loans,
+            num_rows="dynamic",
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Save": st.column_config.CheckboxColumn("Save?", default=True),
+                "Bank": st.column_config.SelectboxColumn("Bank", options=BANK_OPTIONS, default="SBI"),
+                "Loan Category": st.column_config.SelectboxColumn(
+                    "Loan Category", options=list(LOAN_CATEGORY_MAP.keys()), default="Bank & Personal Loan"
+                ),
+                "Loan Sub-category": st.column_config.TextColumn("Loan Sub-category"),
+                "Member": st.column_config.SelectboxColumn("Member", options=EXPENSE_MEMBERS, default="Aditya Das"),
+                "EMI Paid (₹)": st.column_config.NumberColumn("EMI Paid (₹)", min_value=0.0, format="%.2f", default=0.0),
+                "Pending Loan (₹)": st.column_config.NumberColumn("Pending Loan (₹)", min_value=0.0, format="%.2f", default=0.0),
+                "Details": st.column_config.TextColumn("Details")
+            },
+            key="bulk_loan_editor"
+        )
+
+        checked_loans = edited_loans[edited_loans["Save"] == True]
+        tot_pending_preview = checked_loans["Pending Loan (₹)"].sum()
+        tot_emi_preview = checked_loans["EMI Paid (₹)"].sum()
+
+        st.caption(
+            f"✅ **{len(checked_loans)} Loans Selected** | "
+            f"Total Pending Balance: **{format_inr(tot_pending_preview, 2)}** "
+            f"*({number_to_indian_words(tot_pending_preview)})* | "
+            f"Total EMI Paid: **{format_inr(tot_emi_preview, 2)}**"
+        )
+
+        if st.button(
+            f"🚀 Save {len(checked_loans)} Pending Loans for {bulk_loan_date.strftime('%B %Y')}",
+            type="primary", use_container_width=True
+        ):
+            if checked_loans.empty:
+                st.warning("Please keep at least one loan row checked.")
+            else:
+                loan_records = [
+                    (
+                        bulk_loan_date,
+                        str(r.get("Bank") or "SBI"),
+                        "Expense",
+                        str(r.get("Loan Category") or "Loans & EMIs"),
+                        str(r.get("Loan Sub-category") or "Other Loan / EMI").strip(),
+                        str(r.get("Member") or "Aditya Das"),
+                        float(r.get("EMI Paid (₹)") or 0.0),
+                        float(r.get("Pending Loan (₹)") or 0.0),
+                        str(r.get("Details") or "").strip()
+                    )
+                    for _, r in checked_loans.iterrows()
+                    if float(r.get("Pending Loan (₹)") or 0.0) > 0 or float(r.get("EMI Paid (₹)") or 0.0) > 0
+                ]
+                bulk_add_transactions(loan_records)
+                st.toast(f"🏦 Saved {len(loan_records)} Pending Loans for {bulk_loan_date.strftime('%B %Y')}!", icon="✅")
+                st.rerun()
 
 
 @st.dialog("📥 Import Merged CSV or Multi-Sheet Excel", width="large")
@@ -1001,7 +1239,7 @@ def open_excel_import_modal():
             f"✅ **{len(to_import)} rows ready** | "
             f"Income: **{format_inr(imp_inc_total, 0)}** | "
             f"Expense: **{format_inr(imp_exp_total, 0)}** | "
-            f"Self Transfer (Excluded from totals): **{format_inr(imp_self_total, 0)}**"
+            f"Self Transfer (Excluded): **{format_inr(imp_self_total, 0)}**"
         )
 
         if st.button(f"🚀 Import All {len(to_import)} Rows into Database", type="primary", use_container_width=True):
@@ -1120,13 +1358,15 @@ def open_copy_modal():
 
     clone_filter = st.radio(
         "3️⃣ What to Fetch?",
-        ["Only Expenses & Loans", "Both Expenses & Income"],
+        ["Only Expenses & Loans", "Only Pending Loans", "Both Expenses & Income"],
         horizontal=True
     )
 
     src_df = df[df["Month_Label"] == source_month].copy()
     if clone_filter == "Only Expenses & Loans":
         src_df = src_df[src_df["t_type"] == "Expense"]
+    elif clone_filter == "Only Pending Loans":
+        src_df = src_df[src_df["pending_loan"] > 0]
     else:
         src_df = src_df[src_df["t_type"].isin(["Expense", "Income"])]
 
@@ -1153,7 +1393,7 @@ def open_copy_modal():
             "Copy": st.column_config.CheckboxColumn("Copy?", default=True),
             "Bank": st.column_config.SelectboxColumn("Bank", options=BANK_OPTIONS),
             "Type": st.column_config.TextColumn("Type", disabled=True),
-            "Category": st.column_config.TextColumn("Category", disabled=True),
+            "Category": st.column_config.TextColumn("Category"),
             "Sub-category": st.column_config.TextColumn("Sub-category"),
             "Member": st.column_config.SelectboxColumn("Member", options=EXPENSE_MEMBERS + ["Other"]),
             "Amount (₹)": st.column_config.NumberColumn("Amount (₹)", min_value=0.0, format="%.2f"),
@@ -1208,7 +1448,7 @@ def open_modify_modal(target_df):
     rec_id = records_map[selected_label]
     rec_row = target_df[target_df["id"] == rec_id].iloc[0]
 
-    mc1, mc2, mc3 = st.columns([1.3, 1, 1.3])
+    mc1, mc2 = st.columns(2)
     with mc1:
         type_opts = ["Expense", "Income", "Self Transfer"]
         default_type_idx = type_opts.index(rec_row["t_type"]) if rec_row["t_type"] in type_opts else 0
@@ -1223,24 +1463,29 @@ def open_modify_modal(target_df):
         edit_bank = st.selectbox("Bank", bank_list, index=bank_list.index(rec_row["bank"]), key=f"mod_bank_{rec_id}")
 
     cat_map = get_category_map_for_type(edit_type)
-    cat_list = list(cat_map.keys())
-    default_cat_idx = cat_list.index(rec_row["category"]) if rec_row["category"] in cat_list else 0
+    cat_list = list(cat_map.keys()) + [c for c in LOAN_CATEGORY_MAP.keys() if c not in cat_map]
+    if rec_row["category"] not in cat_list:
+        cat_list.insert(0, rec_row["category"])
+    default_cat_idx = cat_list.index(rec_row["category"])
 
+    mc3, mc4 = st.columns(2)
     with mc3:
         edit_category = st.selectbox(
             "Category", cat_list, index=default_cat_idx, key=f"mod_cat_{rec_id}"
         )
 
-    sub_list = list(cat_map[edit_category])
+    base_subs = cat_map.get(edit_category, LOAN_CATEGORY_MAP.get(edit_category, ["Miscellaneous"]))
+    sub_list = list(base_subs)
     current_sub = str(rec_row["sub_category"])
     if current_sub not in sub_list:
         sub_list.insert(0, current_sub)
     sub_list.append("➕ Custom Sub-category...")
     default_sub_idx = sub_list.index(current_sub)
 
-    edit_sub_choice = st.selectbox(
-        "Sub-category", sub_list, index=default_sub_idx, key=f"mod_sub_{rec_id}"
-    )
+    with mc4:
+        edit_sub_choice = st.selectbox(
+            "Sub-category", sub_list, index=default_sub_idx, key=f"mod_sub_{rec_id}"
+        )
 
     custom_edit_sub = ""
     if edit_sub_choice == "➕ Custom Sub-category...":
@@ -1327,43 +1572,47 @@ def open_delete_modal(target_df, scope_label="Selected Month"):
             st.warning("⚠️ Please select at least one entry above.")
 
 # ==========================================
-# 7. TOP ACTION BUTTON BAR (POPUP TRIGGERS)
+# 7. MOBILE-OPTIMIZED TOP HEADER & ACTION BAR
 # ==========================================
-st.markdown("### 💰 Das Family Expense & Loan Tracker")
+st.markdown('<div class="app-top-title">💰 Das Family Expense & Loan Tracker</div>', unsafe_allow_html=True)
 
 bin_count = len(bin_df)
 bin_btn_label = f"🗑️ Bin ({bin_count})" if bin_count > 0 else "🗑️ Bin"
 
 if not df.empty:
+    # 2x3 / 2-column responsive button grid on mobile, single row on desktop
     btn_c1, btn_c2, btn_c3, btn_c4, btn_c5, btn_c6 = st.columns(6)
     with btn_c1:
         if st.button("➕ Add Entry", type="primary", use_container_width=True):
             open_add_modal()
     with btn_c2:
+        if st.button("🏦 Pending Loan", use_container_width=True):
+            open_pending_loan_modal()
+    with btn_c3:
         if st.button("📥 Import Excel", use_container_width=True):
             open_excel_import_modal()
-    with btn_c3:
+    with btn_c4:
         if st.button("🔄 Copy Month", use_container_width=True):
             open_copy_modal()
-    with btn_c4:
+    with btn_c5:
         if st.button("✏️ Modify", use_container_width=True):
             open_modify_modal(df)
-    with btn_c5:
+    with btn_c6:
         latest_row = df.iloc[0]
         if st.button(f"↩️ Undo (#{int(latest_row['id'])})", use_container_width=True):
             open_undo_confirm_modal(latest_row)
-    with btn_c6:
-        if st.button(bin_btn_label, use_container_width=True):
-            open_recycle_bin_modal()
 else:
-    empty_c1, empty_c2, empty_c3 = st.columns([2, 2, 1])
+    empty_c1, empty_c2, empty_c3, empty_c4 = st.columns(4)
     with empty_c1:
-        if st.button("➕ Add First Entry", type="primary", use_container_width=True):
+        if st.button("➕ Add Entry", type="primary", use_container_width=True):
             open_add_modal()
     with empty_c2:
-        if st.button("📥 Import Merged CSV / Excel", use_container_width=True):
-            open_excel_import_modal()
+        if st.button("🏦 Pending Loan", use_container_width=True):
+            open_pending_loan_modal()
     with empty_c3:
+        if st.button("📥 Import CSV/Excel", use_container_width=True):
+            open_excel_import_modal()
+    with empty_c4:
         if st.button(bin_btn_label, use_container_width=True):
             open_recycle_bin_modal()
 
@@ -1371,7 +1620,7 @@ else:
 # 8. MAIN DASHBOARD (INDIAN NUMBER FORMAT)
 # ==========================================
 if df.empty:
-    st.info("👋 Tap **➕ Add First Entry** or **📥 Import Merged CSV / Excel** above to get started!")
+    st.info("👋 Tap **➕ Add Entry**, **🏦 Pending Loan**, or **📥 Import CSV/Excel** above to get started!")
 else:
     tab_monthly, tab_loans, tab_trends, tab_records = st.tabs([
         "📅 Monthly", "🏦 Loans", "📈 Trends", "📋 History"
@@ -1383,17 +1632,17 @@ else:
     with tab_monthly:
         month_options = df.sort_values("Month_Key", ascending=False)["Month_Label"].unique()
 
-        col_select, col_chart_style = st.columns([1.2, 1.8])
+        col_select, col_chart_style = st.columns(2)
         with col_select:
-            selected_month = st.selectbox("🗓️ Select Month", month_options)
+            selected_month = st.selectbox("🗓️ Select Budget Month", month_options)
         with col_chart_style:
             chart_style = st.radio(
                 "📊 Chart Style",
-                ["PieChart (Donut)", "PieChart (Solid)", "Bar Chart"],
+                ["Donut", "Solid Pie", "Bar"],
                 horizontal=True
             )
 
-        with st.expander("🏦 Filter by Bank & Family Member (All Selected)", expanded=False):
+        with st.expander("🏦 Filter by Bank & Family Member", expanded=False):
             f_b_col, f_m_col = st.columns(2)
             with f_b_col:
                 selected_banks = st.multiselect(
@@ -1414,7 +1663,6 @@ else:
             (df["member"].isin(selected_members))
         ]
 
-        # Monthly Top-Level KPI Metrics (Excludes 'Self Transfer' & includes shifted salary from prev month's last working day!)
         m_income = m_df[m_df["t_type"] == "Income"]["amount"].sum()
         m_expense = m_df[m_df["t_type"] == "Expense"]["amount"].sum()
         m_balance = m_income - m_expense
@@ -1422,6 +1670,7 @@ else:
         m_self_transfer = m_df[m_df["t_type"] == "Self Transfer"]["amount"].sum()
         shifted_sal_df = m_df[m_df["Is_Shifted_Salary"] == True]
 
+        # 2x2 Side-by-Side KPI Grid on Mobile & Desktop
         r1_c1, r1_c2 = st.columns(2)
         r1_c1.metric("Monthly Income", format_inr(m_income))
         r1_c2.metric("Monthly Expense", format_inr(m_expense))
@@ -1431,24 +1680,24 @@ else:
         r2_c2.metric("Pending Loan", format_inr(m_pending_loan))
 
         if not shifted_sal_df.empty:
-            sal_dates = ", ".join(shifted_sal_df["t_date"].dt.strftime("%d %b %Y").unique())
+            sal_dates = ", ".join(shifted_sal_df["t_date"].dt.strftime("%d %b").unique())
             sal_sum = shifted_sal_df["amount"].sum()
             st.caption(
-                f"📅 **Salary Shift Active:** Includes **{format_inr(sal_sum)}** salary credited on **{sal_dates}** "
-                f"(last working day of previous month) as **{selected_month.split(' (')[0]}**'s income."
+                f"📅 **Salary Auto-Shift:** Includes **{format_inr(sal_sum)}** credited on **{sal_dates}**."
             )
 
         if m_self_transfer > 0:
-            st.caption(
-                f"🔄 **Internal Self-Transfers / FD Sweeps Excluded from Totals:** {format_inr(m_self_transfer)}"
-            )
+            st.caption(f"🔄 **Self-Transfers Excluded from Totals:** {format_inr(m_self_transfer)}")
 
-        m_act1, m_act2 = st.columns(2)
+        m_act1, m_act2, m_act3 = st.columns(3)
         with m_act1:
-            if st.button(f"✏️ Modify Entry in {selected_month.split(' ')[0]}", use_container_width=True, key="btn_mod_m"):
-                open_modify_modal(m_df)
+            if st.button("🏦 Add Pending Loan", use_container_width=True, key="btn_loan_m"):
+                open_pending_loan_modal()
         with m_act2:
-            if st.button(f"🗑️ Delete Entry in {selected_month.split(' ')[0]}", use_container_width=True, key="btn_del_m"):
+            if st.button("✏️ Modify Entry", use_container_width=True, key="btn_mod_m"):
+                open_modify_modal(m_df)
+        with m_act3:
+            if st.button("🗑️ Delete Entry", use_container_width=True, key="btn_del_m"):
                 open_delete_modal(m_df, scope_label=selected_month)
 
         st.divider()
@@ -1456,15 +1705,15 @@ else:
         exp_m_df = m_df[m_df["t_type"] == "Expense"]
         inc_m_df = m_df[m_df["t_type"] == "Income"]
 
-        hole_size = 0.42 if chart_style == "PieChart (Donut)" else 0.0
+        hole_size = 0.45 if chart_style == "Donut" else 0.0
 
         ch1, ch2 = st.columns(2)
         with ch1:
-            st.subheader("🥧 Category-Wise Expense")
+            st.markdown("**🥧 Category Expense**")
             if not exp_m_df.empty and exp_m_df["amount"].sum() > 0:
                 cat_grp = exp_m_df.groupby("category", as_index=False)["amount"].sum().sort_values("amount", ascending=True)
                 cat_grp["INR_Label"] = cat_grp["amount"].apply(format_inr)
-                if "PieChart" in chart_style:
+                if chart_style in ("Donut", "Solid Pie"):
                     fig_cat = px.pie(
                         cat_grp, values="amount", names="category", hole=hole_size,
                         custom_data=["INR_Label"],
@@ -1472,28 +1721,25 @@ else:
                     )
                     fig_cat.update_traces(
                         textposition="inside", textinfo="percent+label",
-                        hovertemplate="<b>%{label}</b><br>Amount: %{customdata[0]}<br>Share: %{percent}<extra></extra>"
+                        hovertemplate="<b>%{label}</b><br>%{customdata[0]} (%{percent})<extra></extra>"
                     )
-                    fig_cat.update_layout(margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
-                    st.plotly_chart(fig_cat, use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                    st.plotly_chart(style_compact_chart(fig_cat), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
                 else:
                     fig_cat_bar = px.bar(
                         cat_grp, x="amount", y="category", color="category", orientation="h",
-                        text="INR_Label",
-                        labels={"category": "Category", "amount": "Expense (₹)"}
+                        text="INR_Label", labels={"category": "", "amount": "₹"}
                     )
-                    fig_cat_bar.update_traces(hovertemplate="<b>%{y}</b><br>Expense: %{text}<extra></extra>")
-                    fig_cat_bar.update_layout(margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
-                    st.plotly_chart(fig_cat_bar, use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                    fig_cat_bar.update_traces(hovertemplate="<b>%{y}</b>: %{text}<extra></extra>")
+                    st.plotly_chart(style_compact_chart(fig_cat_bar), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
             else:
-                st.info("No expenses recorded for this month.")
+                st.info("No expenses for this month.")
 
         with ch2:
-            st.subheader("🎯 Sub-Category Expense")
+            st.markdown("**🎯 Sub-Category Expense**")
             if not exp_m_df.empty and exp_m_df["amount"].sum() > 0:
                 sub_grp = exp_m_df.groupby(["sub_category", "category"], as_index=False)["amount"].sum().sort_values("amount", ascending=True)
                 sub_grp["INR_Label"] = sub_grp["amount"].apply(format_inr)
-                if "PieChart" in chart_style:
+                if chart_style in ("Donut", "Solid Pie"):
                     fig_sub_pie = px.pie(
                         sub_grp, values="amount", names="sub_category", hole=hole_size,
                         custom_data=["INR_Label"],
@@ -1501,29 +1747,26 @@ else:
                     )
                     fig_sub_pie.update_traces(
                         textposition="inside", textinfo="percent+label",
-                        hovertemplate="<b>%{label}</b><br>Amount: %{customdata[0]}<br>Share: %{percent}<extra></extra>"
+                        hovertemplate="<b>%{label}</b><br>%{customdata[0]} (%{percent})<extra></extra>"
                     )
-                    fig_sub_pie.update_layout(margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
-                    st.plotly_chart(fig_sub_pie, use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                    st.plotly_chart(style_compact_chart(fig_sub_pie), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
                 else:
                     fig_sub_bar = px.bar(
-                        sub_grp, x="amount", y="sub_category", color="category", orientation="h",
-                        text="INR_Label",
-                        labels={"sub_category": "Sub-category", "amount": "Expense (₹)", "category": "Category"}
+                        sub_grp.tail(10), x="amount", y="sub_category", color="category", orientation="h",
+                        text="INR_Label", labels={"sub_category": "", "amount": "₹"}
                     )
-                    fig_sub_bar.update_traces(hovertemplate="<b>%{y}</b><br>Expense: %{text}<extra></extra>")
-                    fig_sub_bar.update_layout(margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
-                    st.plotly_chart(fig_sub_bar, use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                    fig_sub_bar.update_traces(hovertemplate="<b>%{y}</b>: %{text}<extra></extra>")
+                    st.plotly_chart(style_compact_chart(fig_sub_bar), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
             else:
-                st.info("No expenses recorded for this month.")
+                st.info("No expenses for this month.")
 
         ch3, ch4 = st.columns(2)
         with ch3:
-            st.subheader("👨‍👩‍👦 Family Member Income")
+            st.markdown("**👨‍👩‍👦 Member Income**")
             if not inc_m_df.empty and inc_m_df["amount"].sum() > 0:
                 mem_inc_summary = inc_m_df.groupby("member", as_index=False)["amount"].sum()
                 mem_inc_summary["INR_Label"] = mem_inc_summary["amount"].apply(format_inr)
-                if "PieChart" in chart_style:
+                if chart_style in ("Donut", "Solid Pie"):
                     fig_inc_pie = px.pie(
                         mem_inc_summary, values="amount", names="member", hole=hole_size,
                         custom_data=["INR_Label"],
@@ -1531,28 +1774,25 @@ else:
                     )
                     fig_inc_pie.update_traces(
                         textposition="inside", textinfo="percent+label",
-                        hovertemplate="<b>%{label}</b><br>Income: %{customdata[0]}<extra></extra>"
+                        hovertemplate="<b>%{label}</b>: %{customdata[0]}<extra></extra>"
                     )
-                    fig_inc_pie.update_layout(margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
-                    st.plotly_chart(fig_inc_pie, use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                    st.plotly_chart(style_compact_chart(fig_inc_pie), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
                 else:
                     fig_inc_bar = px.bar(
                         mem_inc_summary, x="member", y="amount", color="member",
-                        text="INR_Label",
-                        labels={"member": "Family Member", "amount": "Income (₹)"}
+                        text="INR_Label", labels={"member": "", "amount": "₹"}
                     )
-                    fig_inc_bar.update_traces(hovertemplate="<b>%{x}</b><br>Income: %{text}<extra></extra>")
-                    fig_inc_bar.update_layout(margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
-                    st.plotly_chart(fig_inc_bar, use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                    fig_inc_bar.update_traces(hovertemplate="<b>%{x}</b>: %{text}<extra></extra>")
+                    st.plotly_chart(style_compact_chart(fig_inc_bar), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
             else:
-                st.info("No income recorded for this month.")
+                st.info("No income for this month.")
 
         with ch4:
-            st.subheader("🏦 Expense by Bank Account")
+            st.markdown("**🏦 Expense by Bank**")
             if not exp_m_df.empty and exp_m_df["amount"].sum() > 0:
                 bank_grp = exp_m_df.groupby("bank", as_index=False)["amount"].sum()
                 bank_grp["INR_Label"] = bank_grp["amount"].apply(format_inr)
-                if "PieChart" in chart_style:
+                if chart_style in ("Donut", "Solid Pie"):
                     fig_bank_pie = px.pie(
                         bank_grp, values="amount", names="bank", hole=hole_size,
                         custom_data=["INR_Label"],
@@ -1560,25 +1800,22 @@ else:
                     )
                     fig_bank_pie.update_traces(
                         textposition="inside", textinfo="percent+label",
-                        hovertemplate="<b>%{label}</b><br>Spent: %{customdata[0]}<extra></extra>"
+                        hovertemplate="<b>%{label}</b>: %{customdata[0]}<extra></extra>"
                     )
-                    fig_bank_pie.update_layout(margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
-                    st.plotly_chart(fig_bank_pie, use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                    st.plotly_chart(style_compact_chart(fig_bank_pie), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
                 else:
                     fig_bank_bar = px.bar(
                         bank_grp, x="bank", y="amount", color="bank",
-                        text="INR_Label",
-                        labels={"bank": "Bank", "amount": "Expense (₹)"}
+                        text="INR_Label", labels={"bank": "", "amount": "₹"}
                     )
-                    fig_bank_bar.update_traces(hovertemplate="<b>%{x}</b><br>Spent: %{text}<extra></extra>")
-                    fig_bank_bar.update_layout(margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
-                    st.plotly_chart(fig_bank_bar, use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                    fig_bank_bar.update_traces(hovertemplate="<b>%{x}</b>: %{text}<extra></extra>")
+                    st.plotly_chart(style_compact_chart(fig_bank_bar), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
             else:
-                st.info("No bank expenses recorded for this month.")
+                st.info("No bank expenses.")
 
         t_col1, t_col2 = st.columns(2)
         with t_col1:
-            st.subheader("📂 Sub-Category Summary")
+            st.markdown("**📂 Sub-Category Summary**")
             if not exp_m_df.empty:
                 sub_table = exp_m_df.groupby(["sub_category", "category"], as_index=False).agg(
                     Paid=("amount", "sum"), Loan=("pending_loan", "sum")
@@ -1589,7 +1826,7 @@ else:
                 st.dataframe(sub_table, use_container_width=True, hide_index=True)
 
         with t_col2:
-            st.subheader("💳 Bank & Member Summary")
+            st.markdown("**💳 Bank & Member Summary**")
             if not exp_m_df.empty:
                 mem_exp_table = exp_m_df.groupby(["bank", "member"], as_index=False).agg(
                     Entries=("id", "count"), Total_Paid=("amount", "sum"), Total_Pending_Loan=("pending_loan", "sum")
@@ -1600,53 +1837,153 @@ else:
                 st.dataframe(mem_exp_table, use_container_width=True, hide_index=True)
 
     # ------------------------------------------
-    # TAB 2: DEDICATED PENDING LOAN TRACKER
+    # TAB 2: DEDICATED PENDING LOAN TRACKER & CHARTS
     # ------------------------------------------
     with tab_loans:
-        st.subheader("🏦 Pending Loan Status Till Date")
-        loan_all_df = df[df["pending_loan"] > 0]
+        l_top1, l_top2 = st.columns(2)
+        with l_top1:
+            if st.button("🏦 Add / Update Month-Wise Loans", type="primary", use_container_width=True, key="btn_open_loan_tab"):
+                open_pending_loan_modal()
+        with l_top2:
+            loan_chart_style = st.radio(
+                "📊 Loan Chart Style",
+                ["Donut", "Solid Pie", "Bar"],
+                horizontal=True,
+                key="loan_chart_style_radio"
+            )
+
+        # Include both explicit Pending Loan entries (>0) AND Loan EMI payments
+        loan_all_df = df[(df["pending_loan"] > 0) | (df["category"] == "Loans & EMIs") | (df["category"].isin(LOAN_CATEGORY_MAP.keys()))].copy()
 
         if loan_all_df.empty:
-            st.info("No Pending Loan balances entered yet. Tap '➕ Add Entry' or '✏️ Modify' to add a Pending Loan balance.")
+            st.info("👋 Tap **🏦 Add / Update Month-Wise Loans** above to load your Gold Loan, EDU Loan, Consumer Loan, and HDFC Loan balances!")
         else:
             loan_months = loan_all_df.sort_values("Month_Key", ascending=False)["Month_Label"].unique()
-            sel_loan_month = st.selectbox("🗓️ Select Month", loan_months, key="loan_month_sel")
+            sel_loan_month = st.selectbox("🗓️ Select Loan Month", loan_months, key="loan_month_sel")
 
             cur_loan_df = loan_all_df[loan_all_df["Month_Label"] == sel_loan_month]
             total_pending_till_date = cur_loan_df["pending_loan"].sum()
             total_emi_paid_month = cur_loan_df["amount"].sum()
+            active_loan_count = (cur_loan_df["pending_loan"] > 0).sum()
 
             lk1, lk2 = st.columns(2)
             lk1.metric("Total Pending Loan", format_inr(total_pending_till_date))
             lk2.metric("EMIs Paid This Month", format_inr(total_emi_paid_month))
 
-            if st.button(f"✏️ Modify a Loan Entry in {sel_loan_month.split(' ')[0]}", use_container_width=True, key="btn_mod_loan"):
-                open_modify_modal(cur_loan_df)
+            lk3, lk4 = st.columns(2)
+            lk3.metric("Active Loan Accounts", f"{active_loan_count} Loans")
+            lk4.metric("In Words", number_to_indian_words(total_pending_till_date) or "₹0")
+
+            l_act1, l_act2 = st.columns(2)
+            with l_act1:
+                if st.button("✏️ Modify Loan Entry", use_container_width=True, key="btn_mod_loan"):
+                    open_modify_modal(cur_loan_df)
+            with l_act2:
+                if st.button("🗑️ Delete Loan Entry", use_container_width=True, key="btn_del_loan"):
+                    open_delete_modal(cur_loan_df, scope_label=f"Loans in {sel_loan_month}")
 
             st.divider()
 
-            lc1, lc2 = st.columns(2)
-            with lc1:
-                st.subheader("📋 Itemized Pending Loans")
-                loan_list_disp = cur_loan_df[["bank", "sub_category", "member", "amount", "pending_loan", "details"]].copy()
-                loan_list_disp["amount"] = loan_list_disp["amount"].apply(lambda x: format_inr(x, 2))
-                loan_list_disp["pending_loan"] = loan_list_disp["pending_loan"].apply(lambda x: format_inr(x, 2))
-                loan_list_disp.columns = ["Bank", "Loan Type", "Member", "EMI Paid", "Pending Loan", "Details"]
-                st.dataframe(loan_list_disp, use_container_width=True, hide_index=True)
-                st.success(f"**Total Loan Pending ({sel_loan_month}): {format_inr(total_pending_till_date, 2)}**")
+            loan_hole = 0.45 if loan_chart_style == "Donut" else 0.0
+            pending_only_df = cur_loan_df[cur_loan_df["pending_loan"] > 0]
+            chart_source_df = pending_only_df if not pending_only_df.empty else cur_loan_df
+            val_col = "pending_loan" if not pending_only_df.empty else "amount"
+            val_title = "Pending Loan" if val_col == "pending_loan" else "EMI Paid"
 
-            with lc2:
-                st.subheader("📉 Month-over-Month Pending Loan")
-                mom_loan = loan_all_df.groupby("Month_Key", as_index=False)["pending_loan"].sum().sort_values("Month_Key")
-                mom_loan["INR_Label"] = mom_loan["pending_loan"].apply(format_inr)
+            # 4 Compact Charts for Loans (Category-wise, Sub-category-wise, Member-wise, Month-over-Month)
+            l_ch1, l_ch2 = st.columns(2)
+            with l_ch1:
+                st.markdown(f"**📂 Category-Wise {val_title}**")
+                l_cat_grp = chart_source_df.groupby("Loan_Category", as_index=False)[val_col].sum().sort_values(val_col, ascending=True)
+                l_cat_grp["INR_Label"] = l_cat_grp[val_col].apply(format_inr)
+                if loan_chart_style in ("Donut", "Solid Pie"):
+                    fig_lcat = px.pie(
+                        l_cat_grp, values=val_col, names="Loan_Category", hole=loan_hole,
+                        custom_data=["INR_Label"],
+                        color_discrete_sequence=px.colors.qualitative.Bold
+                    )
+                    fig_lcat.update_traces(
+                        textposition="inside", textinfo="percent+label",
+                        hovertemplate="<b>%{label}</b><br>%{customdata[0]} (%{percent})<extra></extra>"
+                    )
+                    st.plotly_chart(style_compact_chart(fig_lcat), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                else:
+                    fig_lcat_bar = px.bar(
+                        l_cat_grp, x=val_col, y="Loan_Category", color="Loan_Category", orientation="h",
+                        text="INR_Label", labels={"Loan_Category": "", val_col: "₹"}
+                    )
+                    fig_lcat_bar.update_traces(hovertemplate="<b>%{y}</b>: %{text}<extra></extra>")
+                    st.plotly_chart(style_compact_chart(fig_lcat_bar), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+
+            with l_ch2:
+                st.markdown(f"**🎯 Sub-Category {val_title}**")
+                l_sub_grp = chart_source_df.groupby(["sub_category", "Loan_Category"], as_index=False)[val_col].sum().sort_values(val_col, ascending=True)
+                l_sub_grp["INR_Label"] = l_sub_grp[val_col].apply(format_inr)
+                if loan_chart_style in ("Donut", "Solid Pie"):
+                    fig_lsub = px.pie(
+                        l_sub_grp, values=val_col, names="sub_category", hole=loan_hole,
+                        custom_data=["INR_Label"],
+                        color_discrete_sequence=px.colors.qualitative.Vivid
+                    )
+                    fig_lsub.update_traces(
+                        textposition="inside", textinfo="percent+label",
+                        hovertemplate="<b>%{label}</b><br>%{customdata[0]} (%{percent})<extra></extra>"
+                    )
+                    st.plotly_chart(style_compact_chart(fig_lsub), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                else:
+                    fig_lsub_bar = px.bar(
+                        l_sub_grp, x=val_col, y="sub_category", color="Loan_Category", orientation="h",
+                        text="INR_Label", labels={"sub_category": "", val_col: "₹"}
+                    )
+                    fig_lsub_bar.update_traces(hovertemplate="<b>%{y}</b>: %{text}<extra></extra>")
+                    st.plotly_chart(style_compact_chart(fig_lsub_bar), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+
+            l_ch3, l_ch4 = st.columns(2)
+            with l_ch3:
+                st.markdown(f"**👨‍👩‍👦 Member-Wise {val_title}**")
+                l_mem_grp = chart_source_df.groupby("member", as_index=False)[val_col].sum()
+                l_mem_grp["INR_Label"] = l_mem_grp[val_col].apply(format_inr)
+                if loan_chart_style in ("Donut", "Solid Pie"):
+                    fig_lmem = px.pie(
+                        l_mem_grp, values=val_col, names="member", hole=loan_hole,
+                        custom_data=["INR_Label"],
+                        color_discrete_sequence=px.colors.qualitative.Set2
+                    )
+                    fig_lmem.update_traces(
+                        textposition="inside", textinfo="percent+label",
+                        hovertemplate="<b>%{label}</b>: %{customdata[0]}<extra></extra>"
+                    )
+                    st.plotly_chart(style_compact_chart(fig_lmem), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                else:
+                    fig_lmem_bar = px.bar(
+                        l_mem_grp, x="member", y=val_col, color="member",
+                        text="INR_Label", labels={"member": "", val_col: "₹"}
+                    )
+                    fig_lmem_bar.update_traces(hovertemplate="<b>%{x}</b>: %{text}<extra></extra>")
+                    st.plotly_chart(style_compact_chart(fig_lmem_bar), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+
+            with l_ch4:
+                st.markdown("**📉 Month-Wise Loan Trend**")
+                mom_loan = loan_all_df.groupby("Month_Key", as_index=False).agg(
+                    Pending=("pending_loan", "sum"),
+                    EMI=("amount", "sum")
+                ).sort_values("Month_Key")
+                trend_col = "Pending" if mom_loan["Pending"].sum() > 0 else "EMI"
+                mom_loan["INR_Label"] = mom_loan[trend_col].apply(format_inr)
                 fig_loan_trend = px.bar(
-                    mom_loan, x="Month_Key", y="pending_loan", text="INR_Label",
+                    mom_loan, x="Month_Key", y=trend_col, text="INR_Label",
                     color_discrete_sequence=["#e67e22"],
-                    labels={"Month_Key": "Month", "pending_loan": "Pending Loan (₹)"}
+                    labels={"Month_Key": "", trend_col: "₹"}
                 )
-                fig_loan_trend.update_traces(hovertemplate="<b>%{x}</b><br>Total Pending: %{text}<extra></extra>")
-                fig_loan_trend.update_layout(margin=dict(t=10, b=10, l=10, r=10))
-                st.plotly_chart(fig_loan_trend, use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+                fig_loan_trend.update_traces(hovertemplate="<b>%{x}</b>: %{text}<extra></extra>")
+                st.plotly_chart(style_compact_chart(fig_loan_trend), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+
+            st.markdown("**📋 Itemized Loans & EMIs Table**")
+            loan_list_disp = cur_loan_df[["Loan_Category", "sub_category", "bank", "member", "amount", "pending_loan", "details"]].copy()
+            loan_list_disp["amount"] = loan_list_disp["amount"].apply(lambda x: format_inr(x, 2))
+            loan_list_disp["pending_loan"] = loan_list_disp["pending_loan"].apply(lambda x: format_inr(x, 2))
+            loan_list_disp.columns = ["Loan Category", "Loan Sub-category", "Bank", "Member", "EMI Paid", "Pending Balance", "Details"]
+            st.dataframe(loan_list_disp, use_container_width=True, hide_index=True)
 
     # ------------------------------------------
     # TAB 3: ALL-TIME & MULTI-MONTH TRENDS
@@ -1665,24 +2002,23 @@ else:
 
         a3, a4 = st.columns(2)
         a3.metric("All-Time Net Savings", format_inr(all_bal))
-        a4.metric(f"Latest Pending Loan ({latest_month_key})", format_inr(latest_pending_loan))
+        a4.metric(f"Pending Loan ({latest_month_key})", format_inr(latest_pending_loan))
 
         st.divider()
 
-        st.subheader("📊 Monthly Income vs. Expense (With Shifted Salary Month)")
+        st.markdown("**📊 Monthly Income vs. Expense**")
         active_df = df[df["t_type"].isin(["Income", "Expense"])]
         mom_df = active_df.groupby(["Month_Key", "t_type"], as_index=False)["amount"].sum().sort_values("Month_Key")
         mom_df["INR_Label"] = mom_df["amount"].apply(format_inr)
         fig_mom = px.bar(
             mom_df, x="Month_Key", y="amount", color="t_type", barmode="group", text="INR_Label",
             color_discrete_map={"Income": "#2ecc71", "Expense": "#e74c3c"},
-            labels={"Month_Key": "Month", "amount": "Amount (₹)", "t_type": "Type"}
+            labels={"Month_Key": "", "amount": "₹", "t_type": ""}
         )
         fig_mom.update_traces(hovertemplate="<b>%{x}</b><br>%{fullData.name}: %{text}<extra></extra>")
-        fig_mom.update_layout(margin=dict(t=10, b=10, l=10, r=10))
-        st.plotly_chart(fig_mom, use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+        st.plotly_chart(style_compact_chart(fig_mom, show_legend=True), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
 
-        st.subheader("📈 Sub-Category Spending Trend")
+        st.markdown("**📈 Sub-Category Spending Trend**")
         all_exp_df = df[df["t_type"] == "Expense"]
         if not all_exp_df.empty:
             mom_sub = all_exp_df.groupby(["Month_Key", "sub_category"], as_index=False)["amount"].sum().sort_values("Month_Key")
@@ -1690,19 +2026,18 @@ else:
             fig_mom_sub = px.bar(
                 mom_sub, x="Month_Key", y="amount", color="sub_category",
                 custom_data=["INR_Label"],
-                labels={"Month_Key": "Month", "amount": "Expense (₹)", "sub_category": "Sub-category"}
+                labels={"Month_Key": "", "amount": "₹", "sub_category": ""}
             )
-            fig_mom_sub.update_traces(hovertemplate="<b>%{x}</b><br>Amount: %{customdata[0]}<extra></extra>")
-            fig_mom_sub.update_layout(margin=dict(t=10, b=10, l=10, r=10))
-            st.plotly_chart(fig_mom_sub, use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+            fig_mom_sub.update_traces(hovertemplate="<b>%{x}</b>: %{customdata[0]}<extra></extra>")
+            st.plotly_chart(style_compact_chart(fig_mom_sub), use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
 
     # ------------------------------------------
-    # TAB 4: ALL RECORDS, POPUP EDIT/DELETE & CSV EXPORT
+    # TAB 4: COMPLETE HISTORY WITH RICH MULTI-FILTERS
     # ------------------------------------------
     with tab_records:
         h_btn1, h_btn2, h_btn3, h_btn4 = st.columns(4)
         with h_btn1:
-            if st.button("📥 Import Excel/CSV", use_container_width=True, key="btn_imp_all"):
+            if st.button("📥 Import CSV", use_container_width=True, key="btn_imp_all"):
                 open_excel_import_modal()
         with h_btn2:
             if st.button("✏️ Modify Entry", use_container_width=True, key="btn_mod_all"):
@@ -1714,15 +2049,96 @@ else:
             if st.button(bin_btn_label, use_container_width=True, key="btn_bin_all"):
                 open_recycle_bin_modal()
 
-        st.divider()
-        st.subheader("📋 Complete History (SBI + HDFC)")
+        st.markdown("##### 🔍 Filter Complete History")
+        # Row 1 Filters: Budget Month & Bank
+        hf_r1_c1, hf_r1_c2 = st.columns(2)
+        with hf_r1_c1:
+            all_budget_months = list(df.sort_values("Month_Key", ascending=False)["Month_Key"].unique())
+            hist_months = st.multiselect(
+                "🗓️ Budget Month",
+                options=all_budget_months,
+                default=all_budget_months,
+                key="hist_f_month"
+            )
+        with hf_r1_c2:
+            all_banks = list(df["bank"].unique())
+            hist_banks = st.multiselect(
+                "🏦 Bank Account",
+                options=all_banks,
+                default=all_banks,
+                key="hist_f_bank"
+            )
 
-        type_filter_hist = st.multiselect(
-            "Filter by Transaction Type:",
-            options=["Expense", "Income", "Self Transfer"],
-            default=["Expense", "Income", "Self Transfer"]
+        # Row 2 Filters: Transaction Type & Category
+        hf_r2_c1, hf_r2_c2 = st.columns(2)
+        with hf_r2_c1:
+            all_types = list(df["t_type"].unique())
+            hist_types = st.multiselect(
+                "🔄 Transaction Type",
+                options=all_types,
+                default=all_types,
+                key="hist_f_type"
+            )
+        with hf_r2_c2:
+            avail_cats = sorted(list(df[df["t_type"].isin(hist_types)]["category"].unique()))
+            hist_cats = st.multiselect(
+                "📂 Category",
+                options=avail_cats,
+                default=avail_cats,
+                key="hist_f_cat"
+            )
+
+        # Row 3 Filters: Sub-category & Member + Search
+        hf_r3_c1, hf_r3_c2 = st.columns(2)
+        with hf_r3_c1:
+            avail_subs = sorted(list(df[df["category"].isin(hist_cats)]["sub_category"].unique()))
+            hist_subs = st.multiselect(
+                "🎯 Sub-category",
+                options=avail_subs,
+                default=avail_subs,
+                key="hist_f_sub"
+            )
+        with hf_r3_c2:
+            all_mems = list(df["member"].unique())
+            hist_mems = st.multiselect(
+                "👨‍👩‍👦 Family Member",
+                options=all_mems,
+                default=all_mems,
+                key="hist_f_mem"
+            )
+
+        search_query = st.text_input(
+            "🔎 Search in Details / Narration (Optional)",
+            placeholder="Type any keyword (e.g., Manappuram, TCS, Zomato, Cred)..."
         )
-        hist_df = df[df["t_type"].isin(type_filter_hist)]
+
+        hist_df = df[
+            (df["Month_Key"].isin(hist_months)) &
+            (df["bank"].isin(hist_banks)) &
+            (df["t_type"].isin(hist_types)) &
+            (df["category"].isin(hist_cats)) &
+            (df["sub_category"].isin(hist_subs)) &
+            (df["member"].isin(hist_mems))
+        ].copy()
+
+        if search_query.strip():
+            q = search_query.strip().lower()
+            hist_df = hist_df[
+                hist_df["details"].fillna("").str.lower().str.contains(q) |
+                hist_df["sub_category"].fillna("").str.lower().str.contains(q)
+            ]
+
+        # Live Filtered Summary Metrics
+        f_inc = hist_df[hist_df["t_type"] == "Income"]["amount"].sum()
+        f_exp = hist_df[hist_df["t_type"] == "Expense"]["amount"].sum()
+        f_loan = hist_df["pending_loan"].sum()
+
+        st.caption(
+            f"📊 **Showing {len(hist_df)} matching records** | "
+            f"Filtered Income: **{format_inr(f_inc)}** | "
+            f"Filtered Expense: **{format_inr(f_exp)}** | "
+            f"Filtered Pending Loan: **{format_inr(f_loan)}**"
+        )
 
         disp_df = hist_df[["id", "t_date", "Month_Key", "bank", "t_type", "sub_category", "member", "amount", "pending_loan", "category", "details"]].copy()
         disp_df["t_date"] = disp_df["t_date"].dt.strftime("%Y-%m-%d")
@@ -1739,7 +2155,7 @@ else:
         csv_bytes = raw_csv_df.to_csv(index=False).encode("utf-8")
 
         st.download_button(
-            label="📥 Download Full History as CSV",
+            label=f"📥 Download Filtered History ({len(hist_df)} rows) as CSV",
             data=csv_bytes,
             file_name=f"das_family_finances_{date.today()}.csv",
             mime="text/csv",
