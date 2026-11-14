@@ -3,6 +3,7 @@ import streamlit.components.v1 as components
 import pandas as pd
 import sqlite3
 import re
+import calendar
 from datetime import date, datetime, timedelta
 import plotly.express as px
 import plotly.io as pio
@@ -23,10 +24,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Responsive CSS:
-# - Fixes top header clipping on mobile
-# - Forces 2-column side-by-side KPI metrics & multi-column button grid on phone
-# - Prevents pointer cursor/typing glitches on selectboxes
 st.markdown("""
 <style>
     .block-container {
@@ -101,7 +98,7 @@ st.markdown("""
             min-height: 34px !important;
             height: 34px !important;
             padding: 2px 8px !important;
-            font-size: 0.76rem !important;
+            font-size: 0.75rem !important;
             border-radius: 8px !important;
             width: 100% !important;
         }
@@ -140,10 +137,10 @@ PLOTLY_POPUP_CONFIG = {
     "displaylogo": False,
     "responsive": True
 }
-CHART_HEIGHT = 240  # Compact inline chart height
-POPUP_CHART_HEIGHT = 500  # Large detailed popup chart height
+CHART_HEIGHT = 240
+POPUP_CHART_HEIGHT = 500
 RECYCLE_BIN_RETENTION_DAYS = 3
-SALARY_CUTOFF_DAY = 24  # Salaries credited on or after the 24th count toward next month's budget
+SALARY_CUTOFF_DAY = 24
 
 # ==========================================
 # 2. INDIAN CURRENCY, PARSER & MOBILE UX JS
@@ -182,7 +179,6 @@ def format_inr(val, decimals=0):
 
 
 def clean_currency_value(val):
-    """Cleans Excel/CSV strings like '₹ 3,18,885.00' or '₹79,489' into a float (318885.0)."""
     if val is None or pd.isna(val):
         return 0.0
     if isinstance(val, (int, float)):
@@ -198,7 +194,6 @@ def clean_currency_value(val):
 
 
 def number_to_indian_words(val):
-    """Converts a numeric rupee amount into compact Indian words (e.g., '3 Lakh 18 Thousand 8 Hundred 85')."""
     if val is None or pd.isna(val) or float(val) <= 0:
         return ""
     n = int(round(float(val)))
@@ -230,11 +225,6 @@ def number_to_indian_words(val):
 
 
 def get_effective_accounting_date(row):
-    """
-    If an Income transaction is a Salary credited on the last working days of the month
-    (day >= 24, e.g. 30th Oct Friday), shifts its effective accounting month to the 1st of
-    the NEXT month (e.g. Nov) so it funds the upcoming month's expenses!
-    """
     dt = row["t_date"]
     t_type = str(row.get("t_type", ""))
     sub_cat = str(row.get("sub_category", "")).lower()
@@ -257,8 +247,12 @@ def get_effective_accounting_date(row):
     return pd.Timestamp(year=dt.year, month=dt.month, day=1)
 
 
+def safe_due_date(year, month, due_day):
+    max_d = calendar.monthrange(year, month)[1]
+    return date(year, month, min(max(1, int(due_day)), max_d))
+
+
 def style_compact_chart(fig, show_legend=False):
-    """Applies compact mobile-friendly height and tight margins to inline dashboard charts."""
     fig.update_layout(
         height=CHART_HEIGHT,
         margin=dict(t=8, b=8, l=8, r=8),
@@ -270,10 +264,9 @@ def style_compact_chart(fig, show_legend=False):
 
 def inject_mobile_ux_fixes_js():
     """
-    1. Makes all st.selectbox and st.multiselect dropdowns UNEDITABLE (readOnly = true, inputmode = 'none')
-       so tapping a dropdown on mobile NEVER pops up the virtual keyboard!
+    1. Locks all dropdowns (readOnly = true, inputmode = 'none') so mobile keyboard never pops up.
     2. Attaches live Indian words converter underneath any number input box.
-    3. Enables double-click / double-tap on any chart card to trigger its '🔍 Enlarge' popup button!
+    3. Enables double-click / double-tap on any chart card to trigger its '🔍 Enlarge' popup button.
     """
     components.html(
         """
@@ -313,7 +306,6 @@ def inject_mobile_ux_fixes_js():
             }
 
             function applyMobileFixes() {
-                // 1. LOCK ALL DROPDOWNS SO MOBILE KEYBOARD NEVER POPS UP
                 const selectInputs = parentDoc.querySelectorAll('div[data-baseweb="select"] input');
                 selectInputs.forEach((inp) => {
                     if (inp.getAttribute('readonly') !== 'readonly') {
@@ -323,7 +315,6 @@ def inject_mobile_ux_fixes_js():
                     }
                 });
 
-                // 2. LIVE INDIAN WORDS UNDER NUMBER INPUTS
                 const numInputs = parentDoc.querySelectorAll('div[data-testid="stNumberInput"] input');
                 numInputs.forEach((input) => {
                     if (input.dataset.indianWordsAttached === "true") return;
@@ -354,14 +345,12 @@ def inject_mobile_ux_fixes_js():
                     updateText();
                 });
 
-                // 3. DOUBLE-CLICK / DOUBLE-TAP ON ANY CHART TO OPEN POPUP MODAL
                 const charts = parentDoc.querySelectorAll('div[data-testid="stPlotlyChart"]');
                 charts.forEach((chartDiv) => {
                     if (chartDiv.dataset.dblTapAttached === "true") return;
                     chartDiv.dataset.dblTapAttached = "true";
 
                     const triggerPopupBtn = () => {
-                        // Find the closest preceding '🔍 Enlarge' button in the same column
                         const col = chartDiv.closest('div[data-testid="column"], div[data-testid="stColumn"]');
                         const root = col || chartDiv.parentElement;
                         if (!root) return;
@@ -374,10 +363,8 @@ def inject_mobile_ux_fixes_js():
                         }
                     };
 
-                    // Desktop double-click
                     chartDiv.addEventListener('dblclick', triggerPopupBtn);
 
-                    // Mobile double-tap detector
                     let lastTap = 0;
                     chartDiv.addEventListener('touchend', function(e) {
                         const currentTime = new Date().getTime();
@@ -428,14 +415,26 @@ def check_pin():
 if not check_pin():
     st.stop()
 
-# Inject global mobile dropdown keyboard blocker & double-tap chart listener
 inject_mobile_ux_fixes_js()
 
 # ==========================================
-# 4. CACHED DATABASE ENGINE + BANK & RECYCLE BIN
+# 4. DATABASE ENGINE + UPCOMING BILLS TABLE
 # ==========================================
 USE_POSTGRES = has_secret("DB_URL")
 LOCAL_DB_NAME = "expenses.db"
+
+DEFAULT_RECURRING_BILLS = [
+    ("Home rent", "Housing & Rent", "SBI", "Shared / Family", 6000.0, 15, "Monthly House Rent"),
+    ("Light Bill", "Utilities & Bills", "HDFC", "Shared / Family", 1200.0, 10, "Monthly Electricity Bill (Variable)"),
+    ("Gas Bill", "Utilities & Bills", "SBI", "Shared / Family", 968.0, 5, "HP Pay Direct Cylinder Booking"),
+    ("Mobile / Internet Bill", "Utilities & Bills", "HDFC", "Aditya Das", 470.82, 2, "Reliance JioFiber / Mobile Recharge"),
+    ("HDFC CC bill", "Credit Card Bills", "HDFC", "Aditya Das", 10000.0, 1, "Monthly HDFC Credit Card Bill (Variable)"),
+    ("AXIS CC bill", "Credit Card Bills", "HDFC", "Aditya Das", 5000.0, 5, "Flipkart Axis Credit Card Bill (Variable)"),
+    ("Consumer loan", "Loans & EMIs", "SBI", "Aditya Das", 1736.0, 2, "Bajaj Finance Auto-Pay EMI"),
+    ("HDFC loan", "Loans & EMIs", "HDFC", "Aditya Das", 9406.0, 7, "HDFC Personal Loan EMI"),
+    ("Gold Loan", "Loans & EMIs", "HDFC", "Amal Das", 500.0, 5, "Manappuram Gold Loan Interest / Payment"),
+    ("Mutual Fund", "Insurance & Investments", "SBI", "Aditya Das", 1000.0, 26, "Monthly PhonePe ICCL Mutual Fund SIP"),
+]
 
 @st.cache_resource
 def get_pg_connection():
@@ -454,7 +453,6 @@ def get_connection():
     return sqlite3.connect(LOCAL_DB_NAME, check_same_thread=False)
 
 def purge_expired_recycle_bin(conn=None):
-    """Automatically clears Recycle Bin entries deleted more than 3 days ago."""
     close_after = False
     if conn is None:
         conn = get_connection()
@@ -501,6 +499,26 @@ def init_db_once():
         c.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS sub_category TEXT NOT NULL DEFAULT 'Miscellaneous'")
         c.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS pending_loan NUMERIC(12, 2) NOT NULL DEFAULT 0.0")
         c.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS deleted_at TEXT DEFAULT NULL")
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS recurring_bills (
+                id SERIAL PRIMARY KEY,
+                sub_category TEXT NOT NULL,
+                category TEXT NOT NULL,
+                bank TEXT NOT NULL DEFAULT 'SBI',
+                member TEXT NOT NULL DEFAULT 'Aditya Das',
+                expected_amount NUMERIC(12, 2) NOT NULL DEFAULT 0.0,
+                due_day INTEGER NOT NULL DEFAULT 5,
+                details TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+        c.execute("SELECT COUNT(*) FROM recurring_bills")
+        if c.fetchone()[0] == 0:
+            c.executemany("""
+                INSERT INTO recurring_bills (sub_category, category, bank, member, expected_amount, due_day, details, is_active)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 1)
+            """, DEFAULT_RECURRING_BILLS)
     else:
         c.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
@@ -527,6 +545,27 @@ def init_db_once():
             c.execute("ALTER TABLE transactions ADD COLUMN pending_loan REAL NOT NULL DEFAULT 0.0")
         if "deleted_at" not in columns:
             c.execute("ALTER TABLE transactions ADD COLUMN deleted_at TEXT DEFAULT NULL")
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS recurring_bills (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sub_category TEXT NOT NULL,
+                category TEXT NOT NULL,
+                bank TEXT NOT NULL DEFAULT 'SBI',
+                member TEXT NOT NULL DEFAULT 'Aditya Das',
+                expected_amount REAL NOT NULL DEFAULT 0.0,
+                due_day INTEGER NOT NULL DEFAULT 5,
+                details TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+        c.execute("SELECT COUNT(*) FROM recurring_bills")
+        if c.fetchone()[0] == 0:
+            c.executemany("""
+                INSERT INTO recurring_bills (sub_category, category, bank, member, expected_amount, due_day, details, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            """, DEFAULT_RECURRING_BILLS)
+
     conn.commit()
     c.close()
     purge_expired_recycle_bin(conn)
@@ -642,7 +681,6 @@ def infer_parent_category(sub_cat_name, t_type="Expense"):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_data():
-    """Loads active transactions and shifts end-of-month salaries (day >= 24) into next month's budget."""
     conn = get_connection()
     df = pd.read_sql_query(
         "SELECT * FROM transactions WHERE deleted_at IS NULL OR deleted_at = '' ORDER BY t_date DESC, id DESC",
@@ -675,6 +713,93 @@ def load_data():
             axis=1
         )
     return df
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_recurring_bills():
+    conn = get_connection()
+    r_df = pd.read_sql_query("SELECT * FROM recurring_bills ORDER BY due_day ASC, id ASC", conn)
+    if not USE_POSTGRES:
+        conn.close()
+    if not r_df.empty:
+        r_df["expected_amount"] = r_df["expected_amount"].fillna(0.0).astype(float)
+        r_df["due_day"] = r_df["due_day"].fillna(5).astype(int)
+        r_df["is_active"] = r_df["is_active"].fillna(1).astype(int)
+    return r_df
+
+def compute_upcoming_status(recurring_df, trans_df, target_month_key):
+    """
+    Compares active recurring bills against transactions already recorded in `target_month_key` (e.g. '2026-11')
+    and returns a DataFrame with Paid/Unpaid status, Due Date, and Reminder badges.
+    """
+    if recurring_df.empty:
+        return pd.DataFrame()
+
+    active_bills = recurring_df[recurring_df["is_active"] == 1].copy()
+    if active_bills.empty:
+        return pd.DataFrame()
+
+    try:
+        yr, mn = [int(x) for x in target_month_key.split("-")]
+    except Exception:
+        yr, mn = date.today().year, date.today().month
+
+    if not trans_df.empty:
+        m_exp = trans_df[(trans_df["Month_Key"] == target_month_key) & (trans_df["t_type"] == "Expense")]
+    else:
+        m_exp = pd.DataFrame()
+
+    today_dt = date.today()
+    rows = []
+    for _, bill in active_bills.iterrows():
+        sub_name = str(bill["sub_category"]).strip()
+        due_dt = safe_due_date(yr, mn, int(bill["due_day"]))
+
+        # Check if this sub-category was already paid in this month
+        paid_amt = 0.0
+        paid_count = 0
+        if not m_exp.empty:
+            matched = m_exp[m_exp["sub_category"].str.lower() == sub_name.lower()]
+            paid_amt = matched["amount"].sum()
+            paid_count = len(matched)
+
+        is_paid = paid_amt > 0
+        days_diff = (due_dt - today_dt).days
+
+        if is_paid:
+            status_badge = f"✅ Paid ({format_inr(paid_amt)})"
+            urgency_rank = 4
+        else:
+            if days_diff < 0:
+                status_badge = f"🔴 Overdue by {abs(days_diff)}d (Due {due_dt.strftime('%d %b')})"
+                urgency_rank = 0
+            elif days_diff == 0:
+                status_badge = f"🟠 Due Today! ({due_dt.strftime('%d %b')})"
+                urgency_rank = 1
+            elif days_diff <= 5:
+                status_badge = f"🟡 Due in {days_diff}d ({due_dt.strftime('%d %b')})"
+                urgency_rank = 2
+            else:
+                status_badge = f"🔵 Upcoming ({due_dt.strftime('%d %b')})"
+                urgency_rank = 3
+
+        rows.append({
+            "bill_id": int(bill["id"]),
+            "Pay_Now": not is_paid and urgency_rank <= 2,
+            "Status": status_badge,
+            "Urgency": urgency_rank,
+            "Is_Paid": is_paid,
+            "Due_Date": due_dt,
+            "Due_Day": int(bill["due_day"]),
+            "Bank": str(bill["bank"]),
+            "Category": str(bill["category"]),
+            "Sub-category": sub_name,
+            "Member": str(bill["member"]),
+            "Expected_Amount": float(bill["expected_amount"]),
+            "Paid_Amount": float(paid_amt),
+            "Details": str(bill["details"] or "Monthly Recurring Bill")
+        })
+
+    return pd.DataFrame(rows).sort_values(["Urgency", "Due_Day", "Sub-category"]).reset_index(drop=True)
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_recycle_bin():
@@ -720,6 +845,7 @@ def load_recycle_bin():
 def clear_all_caches():
     load_data.clear()
     load_recycle_bin.clear()
+    load_recurring_bills.clear()
 
 def add_transaction(t_date, bank, t_type, category, sub_category, member, amount, pending_loan, details):
     conn = get_connection()
@@ -755,6 +881,42 @@ def bulk_add_transactions(records_list):
             INSERT INTO transactions (t_date, bank, t_type, category, sub_category, member, amount, pending_loan, details, deleted_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
         """, [(str(r[0]), r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8]) for r in records_list])
+    conn.commit()
+    c.close()
+    if not USE_POSTGRES:
+        conn.close()
+    clear_all_caches()
+
+def save_recurring_templates(edited_df):
+    """Replaces recurring_bills templates with the user's edited dataframe."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM recurring_bills")
+    rows_to_save = []
+    for _, r in edited_df.iterrows():
+        sub_c = str(r.get("Sub-category") or "").strip()
+        if not sub_c:
+            continue
+        cat_c = str(r.get("Category") or infer_parent_category(sub_c, "Expense")).strip()
+        bnk = str(r.get("Bank") or "SBI").strip()
+        mem = str(r.get("Member") or "Aditya Das").strip()
+        exp_amt = float(r.get("Expected Amount (₹)") or 0.0)
+        d_day = min(max(1, int(r.get("Due Day (1-31)") or 5)), 31)
+        det = str(r.get("Details") or "").strip()
+        act = 1 if bool(r.get("Active", True)) else 0
+        rows_to_save.append((sub_c, cat_c, bnk, mem, exp_amt, d_day, det, act))
+
+    if rows_to_save:
+        if USE_POSTGRES:
+            c.executemany("""
+                INSERT INTO recurring_bills (sub_category, category, bank, member, expected_amount, due_day, details, is_active)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, rows_to_save)
+        else:
+            c.executemany("""
+                INSERT INTO recurring_bills (sub_category, category, bank, member, expected_amount, due_day, details, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, rows_to_save)
     conn.commit()
     c.close()
     if not USE_POSTGRES:
@@ -835,13 +997,179 @@ def permanent_delete_transactions(t_ids):
 
 df = load_data()
 bin_df = load_recycle_bin()
+recurring_df = load_recurring_bills()
 
 # ==========================================
 # 6. POPUP MODAL DIALOGS (@st.dialog)
 # ==========================================
+@st.dialog("⏰ Upcoming Monthly Bills & Reminders", width="large")
+def open_upcoming_bills_modal(default_month_key=None):
+    st.caption(
+        "Track your recurring monthly expenses (`Home rent`, `Light Bill`, `Gas Bill`, `EMIs`, `CC Bills`). "
+        "Edit the exact amount for this month in the table below and tap **✅ Mark Checked as Paid** to add them to your expenses!"
+    )
+
+    up_tab1, up_tab2 = st.tabs(["🔔 Pay / Due This Month", "⚙️ Manage Recurring Templates"])
+
+    with up_tab1:
+        # Build month selector (Current month + existing months)
+        cur_m_key = date.today().strftime("%Y-%m")
+        avail_m_keys = sorted(list(set([cur_m_key] + (list(df["Month_Key"].unique()) if not df.empty else []))), reverse=True)
+        default_idx = avail_m_keys.index(default_month_key) if default_month_key in avail_m_keys else 0
+
+        u_col1, u_col2 = st.columns(2)
+        with u_col1:
+            sel_m_key = st.selectbox("🗓️ Target Budget Month", avail_m_keys, index=default_idx, key="up_modal_mkey")
+        with u_col2:
+            filter_view = st.radio(
+                "Show Bills:",
+                ["⏳ Only Unpaid / Due", "📋 All (Unpaid + Paid)"],
+                horizontal=True,
+                key="up_modal_filter"
+            )
+
+        inject_mobile_ux_fixes_js()
+
+        status_df = compute_upcoming_status(recurring_df, df, sel_m_key)
+        if status_df.empty:
+            st.info("No recurring bills configured yet. Switch to the '⚙️ Manage Recurring Templates' tab to add some!")
+        else:
+            unpaid_cnt = int((~status_df["Is_Paid"]).sum())
+            paid_cnt = int(status_df["Is_Paid"].sum())
+            unpaid_est_sum = status_df[~status_df["Is_Paid"]]["Expected_Amount"].sum()
+
+            st.markdown(
+                f"**📊 {sel_m_key} Progress:** `{paid_cnt} Paid` • `{unpaid_cnt} Pending` "
+                f"(Est. Remaining: **{format_inr(unpaid_est_sum)}**)"
+            )
+
+            view_df = status_df[~status_df["Is_Paid"]].copy() if filter_view == "⏳ Only Unpaid / Due" else status_df.copy()
+
+            if view_df.empty:
+                st.success(f"🎉 All recurring bills for **{sel_m_key}** are paid and logged!")
+            else:
+                editor_input_df = pd.DataFrame({
+                    "Pay?": ~view_df["Is_Paid"],
+                    "Status": view_df["Status"],
+                    "Payment Date": [
+                        date.today() if sel_m_key == cur_m_key else r["Due_Date"]
+                        for _, r in view_df.iterrows()
+                    ],
+                    "Bank": view_df["Bank"],
+                    "Sub-category": view_df["Sub-category"],
+                    "Category": view_df["Category"],
+                    "Member": view_df["Member"],
+                    "Amount to Pay (₹)": view_df["Expected_Amount"],
+                    "Pending Loan (₹)": 0.0,
+                    "Details": view_df["Details"]
+                })
+
+                edited_pay_df = st.data_editor(
+                    editor_input_df,
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "Pay?": st.column_config.CheckboxColumn("Pay?", default=True),
+                        "Status": st.column_config.TextColumn("Reminder / Status", disabled=True),
+                        "Payment Date": st.column_config.DateColumn("Payment Date"),
+                        "Bank": st.column_config.SelectboxColumn("Bank", options=BANK_OPTIONS),
+                        "Sub-category": st.column_config.TextColumn("Sub-category"),
+                        "Category": st.column_config.SelectboxColumn("Category", options=list(EXPENSE_CATEGORY_MAP.keys())),
+                        "Member": st.column_config.SelectboxColumn("Member", options=EXPENSE_MEMBERS),
+                        "Amount to Pay (₹)": st.column_config.NumberColumn(
+                            "Actual Amount (₹)", min_value=0.0, format="%.2f",
+                            help="Tap to edit the exact bill amount for this month before marking paid!"
+                        ),
+                        "Pending Loan (₹)": st.column_config.NumberColumn("Pending Loan (₹)", min_value=0.0, format="%.2f"),
+                        "Details": st.column_config.TextColumn("Details")
+                    },
+                    key="up_pay_editor"
+                )
+
+                checked_to_pay = edited_pay_df[edited_pay_df["Pay?"] == True]
+                total_now = checked_to_pay["Amount to Pay (₹)"].sum()
+
+                st.caption(
+                    f"✅ **{len(checked_to_pay)} bill(s) checked** | "
+                    f"Total to Record as Expense: **{format_inr(total_now, 2)}** "
+                    f"*({number_to_indian_words(total_now) or '₹0'})*"
+                )
+
+                if st.button(
+                    f"✅ Mark {len(checked_to_pay)} Checked Bill(s) as Paid & Add to Expenses",
+                    type="primary",
+                    use_container_width=True
+                ):
+                    if checked_to_pay.empty:
+                        st.warning("⚠️ Please check at least one bill in the 'Pay?' column.")
+                    else:
+                        new_exp_records = [
+                            (
+                                row["Payment Date"],
+                                str(row["Bank"]).strip(),
+                                "Expense",
+                                str(row["Category"]).strip(),
+                                str(row["Sub-category"]).strip(),
+                                str(row["Member"]).strip(),
+                                float(row["Amount to Pay (₹)"] or 0.0),
+                                float(row["Pending Loan (₹)"] or 0.0),
+                                str(row["Details"] or "").strip()
+                            )
+                            for _, row in checked_to_pay.iterrows()
+                            if float(row["Amount to Pay (₹)"] or 0.0) > 0
+                        ]
+                        bulk_add_transactions(new_exp_records)
+                        st.toast(f"🎉 Recorded {len(new_exp_records)} bill payment(s) into Expenses!", icon="✅")
+                        st.rerun()
+
+    with up_tab2:
+        st.caption(
+            "Add, edit, or disable your monthly recurring bill reminders below. "
+            "You can add new rows at the bottom of the table for any new monthly bill!"
+        )
+        tmpl_df = pd.DataFrame({
+            "Active": recurring_df["is_active"] == 1,
+            "Sub-category": recurring_df["sub_category"],
+            "Category": recurring_df["category"],
+            "Bank": recurring_df["bank"],
+            "Member": recurring_df["member"],
+            "Expected Amount (₹)": recurring_df["expected_amount"],
+            "Due Day (1-31)": recurring_df["due_day"],
+            "Details": recurring_df["details"].fillna("")
+        })
+
+        edited_tmpl_df = st.data_editor(
+            tmpl_df,
+            num_rows="dynamic",
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Active": st.column_config.CheckboxColumn("Active?", default=True),
+                "Sub-category": st.column_config.TextColumn("Bill / Sub-category *", required=True),
+                "Category": st.column_config.SelectboxColumn(
+                    "Category", options=list(EXPENSE_CATEGORY_MAP.keys()), default="Utilities & Bills"
+                ),
+                "Bank": st.column_config.SelectboxColumn("Default Bank", options=BANK_OPTIONS, default="SBI"),
+                "Member": st.column_config.SelectboxColumn("Member", options=EXPENSE_MEMBERS, default="Aditya Das"),
+                "Expected Amount (₹)": st.column_config.NumberColumn(
+                    "Approx / Expected (₹)", min_value=0.0, format="%.2f", default=1000.0
+                ),
+                "Due Day (1-31)": st.column_config.NumberColumn(
+                    "Due Day of Month (1-31)", min_value=1, max_value=31, step=1, default=5
+                ),
+                "Details": st.column_config.TextColumn("Default Note")
+            },
+            key="recurring_template_editor"
+        )
+
+        if st.button("💾 Save Recurring Bill Templates", type="primary", use_container_width=True):
+            save_recurring_templates(edited_tmpl_df)
+            st.toast("✅ Saved recurring bill templates!", icon="⏰")
+            st.rerun()
+
+
 @st.dialog("🔍 Fullscreen Interactive Chart View", width="large")
 def open_chart_popup_modal(fig_json_str, chart_title, summary_df=None):
-    """Pops up any chart in a large, readable view with full legend and data breakdown for mobile."""
     st.markdown(f"#### {chart_title}")
     st.caption("💡 Tap legend items below the chart to hide/isolate slices, or pinch to zoom.")
     popup_fig = pio.from_json(fig_json_str)
@@ -859,7 +1187,6 @@ def open_chart_popup_modal(fig_json_str, chart_title, summary_df=None):
         ),
         font=dict(size=13)
     )
-    # Show outside labels + percentages on pie charts when popped up so nothing is cramped
     for trace in popup_fig.data:
         if trace.type == "pie":
             trace.textposition = "inside"
@@ -872,7 +1199,6 @@ def open_chart_popup_modal(fig_json_str, chart_title, summary_df=None):
 
 
 def render_chart_with_popup(title, fig, key_suffix, summary_df=None, show_inline_legend=False):
-    """Renders a compact chart on the dashboard with a 1-tap '🔍 Enlarge' button AND double-tap support."""
     hdr_c1, hdr_c2 = st.columns([3, 1])
     with hdr_c1:
         st.markdown(f"**{title}**")
@@ -1700,20 +2026,26 @@ st.markdown('<div class="app-top-title">💰 Das Family Expense & Loan Tracker</
 bin_count = len(bin_df)
 bin_btn_label = f"🗑️ Bin ({bin_count})" if bin_count > 0 else "🗑️ Bin"
 
+# Calculate unpaid upcoming bills count for current month badge
+cur_month_str = date.today().strftime("%Y-%m")
+cur_upcoming_df = compute_upcoming_status(recurring_df, df, cur_month_str)
+unpaid_now_count = int((~cur_upcoming_df["Is_Paid"]).sum()) if not cur_upcoming_df.empty else 0
+upcoming_btn_label = f"⏰ Upcoming ({unpaid_now_count})" if unpaid_now_count > 0 else "⏰ Upcoming"
+
 if not df.empty:
     btn_c1, btn_c2, btn_c3, btn_c4, btn_c5, btn_c6 = st.columns(6)
     with btn_c1:
         if st.button("➕ Add Entry", type="primary", use_container_width=True):
             open_add_modal()
     with btn_c2:
+        if st.button(upcoming_btn_label, use_container_width=True):
+            open_upcoming_bills_modal(cur_month_str)
+    with btn_c3:
         if st.button("🏦 Pending Loan", use_container_width=True):
             open_pending_loan_modal()
-    with btn_c3:
+    with btn_c4:
         if st.button("📥 Import Excel", use_container_width=True):
             open_excel_import_modal()
-    with btn_c4:
-        if st.button("🔄 Copy Month", use_container_width=True):
-            open_copy_modal()
     with btn_c5:
         if st.button("✏️ Modify", use_container_width=True):
             open_modify_modal(df)
@@ -1727,20 +2059,20 @@ else:
         if st.button("➕ Add Entry", type="primary", use_container_width=True):
             open_add_modal()
     with empty_c2:
+        if st.button(upcoming_btn_label, use_container_width=True):
+            open_upcoming_bills_modal(cur_month_str)
+    with empty_c3:
         if st.button("🏦 Pending Loan", use_container_width=True):
             open_pending_loan_modal()
-    with empty_c3:
+    with empty_c4:
         if st.button("📥 Import CSV/Excel", use_container_width=True):
             open_excel_import_modal()
-    with empty_c4:
-        if st.button(bin_btn_label, use_container_width=True):
-            open_recycle_bin_modal()
 
 # ==========================================
 # 8. MAIN DASHBOARD (INDIAN NUMBER FORMAT)
 # ==========================================
 if df.empty:
-    st.info("👋 Tap **➕ Add Entry**, **🏦 Pending Loan**, or **📥 Import CSV/Excel** above to get started!")
+    st.info("👋 Tap **➕ Add Entry**, **⏰ Upcoming**, or **📥 Import CSV/Excel** above to get started!")
 else:
     tab_monthly, tab_loans, tab_trends, tab_records = st.tabs([
         "📅 Monthly", "🏦 Loans", "📈 Trends", "📋 History"
@@ -1761,6 +2093,36 @@ else:
                 ["Donut", "Solid Pie", "Bar"],
                 horizontal=True
             )
+
+        selected_month_key = df[df["Month_Label"] == selected_month]["Month_Key"].iloc[0]
+
+        # SMART UPCOMING BILLS REMINDER BANNER FOR SELECTED MONTH
+        month_upcoming_df = compute_upcoming_status(recurring_df, df, selected_month_key)
+        unpaid_month_bills = month_upcoming_df[~month_upcoming_df["Is_Paid"]] if not month_upcoming_df.empty else pd.DataFrame()
+
+        if not unpaid_month_bills.empty:
+            urgent_bills = unpaid_month_bills[unpaid_month_bills["Urgency"] <= 2]
+            est_unpaid_total = unpaid_month_bills["Expected_Amount"].sum()
+            top_names = ", ".join(
+                [f"**{r['Sub-category']}** ({format_inr(r['Expected_Amount'])})" for _, r in unpaid_month_bills.head(4).iterrows()]
+            )
+            more_txt = f" + {len(unpaid_month_bills) - 4} more" if len(unpaid_month_bills) > 4 else ""
+
+            rem_c1, rem_c2 = st.columns([3, 1])
+            with rem_c1:
+                if not urgent_bills.empty:
+                    st.warning(
+                        f"⏰ **{len(unpaid_month_bills)} Upcoming / Due Bills in {selected_month.split(' (')[0]}** "
+                        f"(Est. **{format_inr(est_unpaid_total)}**): {top_names}{more_txt}"
+                    )
+                else:
+                    st.info(
+                        f"🗓️ **{len(unpaid_month_bills)} Upcoming Bills for {selected_month.split(' (')[0]}** "
+                        f"(Est. **{format_inr(est_unpaid_total)}**): {top_names}{more_txt}"
+                    )
+            with rem_c2:
+                if st.button("✅ Pay / View Bills", key="btn_banner_upcoming", type="primary", use_container_width=True):
+                    open_upcoming_bills_modal(selected_month_key)
 
         with st.expander("🏦 Filter by Bank & Family Member", expanded=False):
             f_b_col, f_m_col = st.columns(2)
@@ -1808,14 +2170,17 @@ else:
         if m_self_transfer > 0:
             st.caption(f"🔄 **Self-Transfers Excluded from Totals:** {format_inr(m_self_transfer)}")
 
-        m_act1, m_act2, m_act3 = st.columns(3)
+        m_act1, m_act2, m_act3, m_act4 = st.columns(4)
         with m_act1:
-            if st.button("🏦 Add Pending Loan", use_container_width=True, key="btn_loan_m"):
-                open_pending_loan_modal()
+            if st.button("⏰ Upcoming Bills", use_container_width=True, key="btn_up_m"):
+                open_upcoming_bills_modal(selected_month_key)
         with m_act2:
+            if st.button("🔄 Copy Month", use_container_width=True, key="btn_copy_m"):
+                open_copy_modal()
+        with m_act3:
             if st.button("✏️ Modify Entry", use_container_width=True, key="btn_mod_m"):
                 open_modify_modal(m_df)
-        with m_act3:
+        with m_act4:
             if st.button("🗑️ Delete Entry", use_container_width=True, key="btn_del_m"):
                 open_delete_modal(m_df, scope_label=selected_month)
 
@@ -2295,6 +2660,6 @@ else:
 
 # Footer status badge
 st.caption(
-    f"⚡ Fast Cached Mode | 📅 Salary Auto-Shift (Day ≥ {SALARY_CUTOFF_DAY} ➡️ Next Month) | 🏦 SBI + HDFC | "
+    f"⚡ Fast Cached Mode | ⏰ Upcoming Bills Active | 📅 Salary Auto-Shift (Day ≥ {SALARY_CUTOFF_DAY}) | "
     + ("🟢 Cloud PostgreSQL" if USE_POSTGRES else "🟡 Local SQLite (`expenses.db`)")
 )
