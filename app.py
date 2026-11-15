@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore")
+
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
@@ -6,6 +9,7 @@ import re
 import os
 import base64
 import calendar
+import html as html_lib
 from datetime import date, datetime, timedelta
 import plotly.express as px
 import plotly.io as pio
@@ -50,8 +54,8 @@ def get_app_icon_data_uri():
 APP_ICON_URI = get_app_icon_data_uri()
 
 # Responsive CSS:
-# - Desktop / Laptop (> 768px): Stays 100% unchanged!
-# - Mobile Phone (<= 768px): Standalone App look, hides Streamlit chrome, 2-col KPIs & compact buttons
+# - Desktop / Laptop (> 768px): Spacious layout, button-styled tabs & radio pills, full DataFrame history table
+# - Mobile Phone (<= 768px): Standalone App look, 2-col KPIs, compact buttons, and Card Feed for History
 st.markdown("""
 <style>
     .block-container {
@@ -82,7 +86,7 @@ st.markdown("""
         caret-color: transparent !important;
         cursor: pointer !important;
     }
-    /* Desktop / Laptop Button Styling (Stays exactly the same on Laptop) */
+    /* Desktop / Laptop Button Styling */
     .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
         min-height: 44px !important;
         font-weight: 600 !important;
@@ -97,9 +101,124 @@ st.markdown("""
     div[data-testid="stMetricValue"] {
         font-size: 1.3rem !important;
     }
+
+    /* 1. STYLE TABS ("Monthly", "Loans", "Trends", "History") AS SOLID PILL BUTTONS */
+    div[data-baseweb="tab-list"] {
+        gap: 8px !important;
+        border-bottom: none !important;
+        padding-bottom: 4px !important;
+    }
+    div[data-baseweb="tab-highlight"], div[data-baseweb="tab-border"] {
+        display: none !important;
+    }
     button[data-baseweb="tab"] {
-        font-size: 0.95rem !important;
-        padding: 10px 14px !important;
+        background-color: rgba(128, 128, 128, 0.08) !important;
+        border: 1px solid rgba(128, 128, 128, 0.25) !important;
+        border-radius: 10px !important;
+        padding: 8px 18px !important;
+        min-height: 40px !important;
+        font-size: 0.92rem !important;
+        font-weight: 600 !important;
+        color: inherit !important;
+        transition: all 0.15s ease !important;
+    }
+    button[data-baseweb="tab"][aria-selected="true"] {
+        background-color: #FF4B4B !important;
+        border-color: #FF4B4B !important;
+        color: #FFFFFF !important;
+        box-shadow: 0 2px 8px rgba(255, 75, 75, 0.35) !important;
+    }
+    button[data-baseweb="tab"][aria-selected="true"] p {
+        color: #FFFFFF !important;
+    }
+
+    /* 2. STYLE HORIZONTAL RADIO ("Donut", "Solid Pie", "Bar") AS SEGMENTED BUTTONS */
+    div[role="radiogroup"] {
+        display: flex !important;
+        flex-direction: row !important;
+        gap: 6px !important;
+        background-color: rgba(128, 128, 128, 0.08) !important;
+        padding: 4px !important;
+        border-radius: 10px !important;
+        border: 1px solid rgba(128, 128, 128, 0.2) !important;
+        width: fit-content !important;
+    }
+    div[role="radiogroup"] label > div:first-child {
+        display: none !important;
+    }
+    div[role="radiogroup"] label {
+        flex: 1 1 auto !important;
+        justify-content: center !important;
+        background-color: transparent !important;
+        border: 1px solid transparent !important;
+        border-radius: 7px !important;
+        padding: 6px 14px !important;
+        margin: 0 !important;
+        cursor: pointer !important;
+        transition: all 0.15s ease !important;
+    }
+    div[role="radiogroup"] label p {
+        font-size: 0.85rem !important;
+        font-weight: 600 !important;
+        margin: 0 !important;
+    }
+    div[role="radiogroup"] label:has(input:checked) {
+        background-color: #FF4B4B !important;
+        border-color: #FF4B4B !important;
+        box-shadow: 0 2px 6px rgba(255, 75, 75, 0.35) !important;
+    }
+    div[role="radiogroup"] label:has(input:checked) p {
+        color: #FFFFFF !important;
+    }
+
+    /* 3. DESKTOP DEFAULT: Show DataFrame Table, Hide Mobile History Cards */
+    div[data-testid="stElementContainer"]:has(.mobile-history-feed),
+    .mobile-history-feed {
+        display: none !important;
+    }
+    .hist-card {
+        background-color: rgba(128, 128, 128, 0.08);
+        border: 1px solid rgba(128, 128, 128, 0.22);
+        border-radius: 12px;
+        padding: 11px 13px;
+        margin-bottom: 8px;
+    }
+    .hist-card-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 8px;
+        margin-bottom: 6px;
+    }
+    .hist-subcat {
+        font-size: 0.94rem;
+        font-weight: 700;
+        line-height: 1.2;
+    }
+    .hist-amt {
+        font-size: 0.96rem;
+        font-weight: 700;
+        white-space: nowrap;
+    }
+    .hist-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        font-size: 0.72rem;
+        color: #9ca3af;
+        margin-bottom: 4px;
+    }
+    .hist-pill {
+        background: rgba(128, 128, 128, 0.16);
+        padding: 2px 7px;
+        border-radius: 6px;
+        font-weight: 600;
+    }
+    .hist-details {
+        font-size: 0.75rem;
+        color: #9ca3af;
+        word-break: break-word;
+        margin-top: 3px;
     }
 
     /* Mobile App Overrides (ONLY applies on phone screens <= 768px) */
@@ -167,12 +286,34 @@ st.markdown("""
         div[data-testid="stMetricDelta"] {
             font-size: 0.72rem !important;
         }
+        div[data-baseweb="tab-list"] {
+            gap: 5px !important;
+        }
         button[data-baseweb="tab"] {
-            font-size: 0.80rem !important;
-            padding: 6px 8px !important;
+            flex: 1 1 auto !important;
+            justify-content: center !important;
+            min-height: 34px !important;
+            height: 34px !important;
+            font-size: 0.76rem !important;
+            padding: 4px 10px !important;
+            border-radius: 8px !important;
+        }
+        div[role="radiogroup"] {
+            width: 100% !important;
+        }
+        div[role="radiogroup"] label {
+            padding: 5px 8px !important;
         }
         h3, .stSubheader {
             font-size: 1.0rem !important;
+        }
+        /* MOBILE OVERRIDE: Hide the wide History DataFrame Table & Show Mobile Cards */
+        div[data-testid="stElementContainer"]:has(.desktop-history-marker) + div[data-testid="stElementContainer"] {
+            display: none !important;
+        }
+        div[data-testid="stElementContainer"]:has(.mobile-history-feed),
+        .mobile-history-feed {
+            display: block !important;
         }
     }
 </style>
@@ -437,7 +578,7 @@ def inject_mobile_ux_fixes_js():
                     if (!helper) {{
                         helper = parentDoc.createElement('div');
                         helper.className = 'live-inr-words';
-                        helper.style.cssText = 'color: #2ecc71; font-size: 0.80rem; font-weight: 600; margin-top: 3px; min-height: 1.1rem; transition: all 0.1s ease;';
+                        helper.style.cssText = 'color: #2ecc71; font-size: 0.78rem; font-weight: 600; margin-top: 2px; line-height: 1.2;';
                         wrapper.appendChild(helper);
                     }}
 
@@ -1133,8 +1274,6 @@ def open_upcoming_bills_modal(default_month_key=None):
         "Use the buttons below to **Add a Scheduled Monthly Bill** OR **Fill Manual Expense Details** directly!"
     )
 
-    # TWO TOGGLE BUTTONS AT THE TOP OF UPCOMING POPUP:
-    # 1. Add Scheduled Monthly Template | 2. Fill Manual Expense Details Immediately
     if "up_top_mode" not in st.session_state:
         st.session_state["up_top_mode"] = None
 
@@ -1298,71 +1437,79 @@ def open_upcoming_bills_modal(default_month_key=None):
                 st.markdown("##### ⚡ Quick Add Scheduled Bill (or Edit Details Manually)")
                 st.caption("Edit the **Amount**, **Bank**, or **Details/Notes** for any bill below, then tap **➕ Add**:")
 
+                # SYMMETRIC 4-TIER SCHEDULED BILL CARDS
                 for _, bill_row in unpaid_df.iterrows():
                     b_id = int(bill_row["bill_id"])
                     with st.container(border=True):
-                        top_r1, top_r2 = st.columns([1.5, 1.5])
-                        with top_r1:
-                            st.markdown(
-                                f"**{bill_row['Sub-category']}** &nbsp; `{bill_row['Status']}`  \n"
-                                f"<span style='font-size:0.78rem;color:gray;'>{bill_row['Category']} • {bill_row['Member']}</span>",
-                                unsafe_allow_html=True
-                            )
-                        with top_r2:
-                            manual_note = st.text_input(
-                                "Details",
-                                value=str(bill_row["Details"]),
-                                placeholder="Edit manual details / note...",
-                                key=f"quick_det_{sel_m_key}_{b_id}",
-                                label_visibility="collapsed"
-                            )
+                        # TIER 1: Full-Width Symmetric Header (Title on Left, Status Pill on Right)
+                        st.markdown(
+                            f'<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:2px;">'
+                            f'<span style="font-size:1.02rem; font-weight:700;">{html_lib.escape(str(bill_row["Sub-category"]))}</span>'
+                            f'<span style="font-size:0.75rem; font-weight:600; background:rgba(128,128,128,0.16); padding:3px 10px; border-radius:20px; white-space:nowrap;">'
+                            f'{html_lib.escape(str(bill_row["Status"]))}'
+                            f'</span>'
+                            f'</div>'
+                            f'<div style="font-size:0.78rem; color:#9ca3af; margin-bottom:10px;">'
+                            f'📂 {html_lib.escape(str(bill_row["Category"]))} &nbsp;•&nbsp; 👨‍👩‍👦 {html_lib.escape(str(bill_row["Member"]))}'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
 
-                        act_c1, act_c2, act_c3 = st.columns([1.3, 0.9, 1.1])
-                        with act_c1:
+                        # TIER 2: Symmetric 2-Column Input Row (Amount 50% | Bank 50%)
+                        in_c1, in_c2 = st.columns(2)
+                        with in_c1:
                             actual_amt = st.number_input(
-                                "Amt (₹)",
+                                "Amount (₹)",
                                 min_value=0.0,
                                 value=float(bill_row["Expected_Amount"]),
                                 step=100.0,
                                 format="%.2f",
-                                key=f"quick_amt_{sel_m_key}_{b_id}",
-                                label_visibility="collapsed"
+                                key=f"quick_amt_{sel_m_key}_{b_id}"
                             )
-                        with act_c2:
+                        with in_c2:
                             bnk_idx = BANK_OPTIONS.index(bill_row["Bank"]) if bill_row["Bank"] in BANK_OPTIONS else 0
                             actual_bnk = st.selectbox(
-                                "Bank",
+                                "Bank Account",
                                 BANK_OPTIONS,
                                 index=bnk_idx,
-                                key=f"quick_bnk_{sel_m_key}_{b_id}",
-                                label_visibility="collapsed"
+                                key=f"quick_bnk_{sel_m_key}_{b_id}"
                             )
-                        with act_c3:
-                            if st.button(
-                                "➕ Add Expense",
-                                key=f"quick_btn_{sel_m_key}_{b_id}",
-                                type="primary",
-                                use_container_width=True
-                            ):
-                                if (actual_amt or 0.0) <= 0:
-                                    st.error("Enter amount > ₹0")
-                                else:
-                                    add_transaction(
-                                        pay_date_default,
-                                        actual_bnk,
-                                        "Expense",
-                                        bill_row["Category"],
-                                        bill_row["Sub-category"],
-                                        bill_row["Member"],
-                                        float(actual_amt),
-                                        0.0,
-                                        manual_note.strip() or bill_row["Details"]
-                                    )
-                                    st.toast(
-                                        f"✅ Added {bill_row['Sub-category']} ({format_inr(actual_amt)}) to Expenses!",
-                                        icon="💰"
-                                    )
-                                    st.rerun()
+
+                        # TIER 3: Full-Width Note / Details Input
+                        manual_note = st.text_input(
+                            "Note / Details",
+                            value=str(bill_row["Details"]),
+                            placeholder="Edit manual details / note...",
+                            key=f"quick_det_{sel_m_key}_{b_id}",
+                            label_visibility="collapsed"
+                        )
+
+                        # TIER 4: Full-Width Primary Action Button (100% Symmetric Width)
+                        if st.button(
+                            f"➕ Add {bill_row['Sub-category']} ({format_inr(actual_amt or 0)}) to Expenses",
+                            key=f"quick_btn_{sel_m_key}_{b_id}",
+                            type="primary",
+                            use_container_width=True
+                        ):
+                            if (actual_amt or 0.0) <= 0:
+                                st.error("Enter amount > ₹0")
+                            else:
+                                add_transaction(
+                                    pay_date_default,
+                                    actual_bnk,
+                                    "Expense",
+                                    bill_row["Category"],
+                                    bill_row["Sub-category"],
+                                    bill_row["Member"],
+                                    float(actual_amt),
+                                    0.0,
+                                    manual_note.strip() or bill_row["Details"]
+                                )
+                                st.toast(
+                                    f"✅ Added {bill_row['Sub-category']} ({format_inr(actual_amt)}) to Expenses!",
+                                    icon="💰"
+                                )
+                                st.rerun()
 
                 with st.expander("📋 Or Bulk-Select & Add Multiple Scheduled Bills at Once", expanded=False):
                     editor_input_df = pd.DataFrame({
@@ -2425,6 +2572,7 @@ else:
         month_upcoming_df = compute_upcoming_status(recurring_df, df, selected_month_key)
         unpaid_month_bills = month_upcoming_df[~month_upcoming_df["Is_Paid"]] if not month_upcoming_df.empty else pd.DataFrame()
 
+        # VERTICAL REMINDER STACK: Reminder Banner on Top, Add/Pay Button on Bottom
         if not unpaid_month_bills.empty:
             urgent_bills = unpaid_month_bills[unpaid_month_bills["Urgency"] <= 2]
             est_unpaid_total = unpaid_month_bills["Expected_Amount"].sum()
@@ -2433,21 +2581,19 @@ else:
             )
             more_txt = f" + {len(unpaid_month_bills) - 4} more" if len(unpaid_month_bills) > 4 else ""
 
-            rem_c1, rem_c2 = st.columns([3, 1])
-            with rem_c1:
-                if not urgent_bills.empty:
-                    st.warning(
-                        f"⏰ **{len(unpaid_month_bills)} Upcoming / Due Bills in {selected_month.split(' (')[0]}** "
-                        f"(Est. **{format_inr(est_unpaid_total)}**): {top_names}{more_txt}"
-                    )
-                else:
-                    st.info(
-                        f"🗓️ **{len(unpaid_month_bills)} Upcoming Bills for {selected_month.split(' (')[0]}** "
-                        f"(Est. **{format_inr(est_unpaid_total)}**): {top_names}{more_txt}"
-                    )
-            with rem_c2:
-                if st.button("➕ Add / Pay Scheduled", key="btn_banner_upcoming", type="primary", use_container_width=True):
-                    open_upcoming_bills_modal(selected_month_key)
+            if not urgent_bills.empty:
+                st.warning(
+                    f"⏰ **{len(unpaid_month_bills)} Upcoming / Due Bills in {selected_month.split(' (')[0]}** "
+                    f"(Est. **{format_inr(est_unpaid_total)}**): {top_names}{more_txt}"
+                )
+            else:
+                st.info(
+                    f"🗓️ **{len(unpaid_month_bills)} Upcoming Bills for {selected_month.split(' (')[0]}** "
+                    f"(Est. **{format_inr(est_unpaid_total)}**): {top_names}{more_txt}"
+                )
+
+            if st.button("➕ Add / Pay Scheduled", key="btn_banner_upcoming", type="primary", use_container_width=True):
+                open_upcoming_bills_modal(selected_month_key)
 
         with st.expander("🏦 Filter by Bank & Family Member", expanded=False):
             f_b_col, f_m_col = st.columns(2)
@@ -2855,7 +3001,7 @@ else:
             render_chart_with_popup("📈 Sub-Category Spending Trend", fig_mom_sub, "t_sub", mom_sub_tbl)
 
     # ------------------------------------------
-    # TAB 4: COMPLETE HISTORY WITH RICH MULTI-FILTERS
+    # TAB 4: COMPLETE HISTORY WITH RICH MULTI-FILTERS & MOBILE CARDS
     # ------------------------------------------
     with tab_records:
         h_btn1, h_btn2, h_btn3, h_btn4 = st.columns(4)
@@ -2981,7 +3127,76 @@ else:
             use_container_width=True
         )
 
+        # 1. DESKTOP VIEW: Normal Full-Width Table (Automatically hidden on screens <= 768px)
+        st.markdown('<div class="desktop-history-marker"></div>', unsafe_allow_html=True)
         st.dataframe(disp_df, use_container_width=True, hide_index=True)
+
+        # 2. MOBILE VIEW: Clean Card Feed (Automatically hidden on Laptop > 768px)
+        MAX_MOBILE_CARDS = 100
+        mobile_slice = hist_df.head(MAX_MOBILE_CARDS)
+        cards_html = ['<div class="mobile-history-feed">']
+
+        if len(hist_df) > MAX_MOBILE_CARDS:
+            cards_html.append(
+                f'<div style="font-size:0.75rem; color:#9ca3af; margin-bottom:8px; text-align:center;">'
+                f'📱 Showing latest {MAX_MOBILE_CARDS} of {len(hist_df)} filtered records (Use filters above to narrow down)'
+                f'</div>'
+            )
+
+        for _, r in mobile_slice.iterrows():
+            t_type = str(r["t_type"])
+            amt_val = float(r["amount"])
+            loan_val = float(r["pending_loan"])
+
+            if t_type == "Income":
+                amt_color = "#2ecc71"
+                sign_prefix = "+"
+            elif t_type == "Self Transfer":
+                amt_color = "#9ca3af"
+                sign_prefix = "⇄ "
+            else:
+                amt_color = "#ff6b6b"
+                sign_prefix = "-"
+
+            if amt_val == 0 and loan_val > 0:
+                primary_amt_str = f"Loan: {format_inr(loan_val, 0)}"
+                amt_color = "#f39c12"
+            else:
+                primary_amt_str = f"{sign_prefix}{format_inr(amt_val, 2)}"
+
+            loan_pill_html = (
+                f'<span class="hist-pill" style="color:#f39c12;">🏦 Loan: {format_inr(loan_val, 0)}</span>'
+                if loan_val > 0 and amt_val > 0 else ""
+            )
+
+            sub_esc = html_lib.escape(str(r["sub_category"]))
+            cat_esc = html_lib.escape(str(r["category"]))
+            mem_esc = html_lib.escape(str(r["member"]))
+            bnk_esc = html_lib.escape(str(r["bank"]))
+            det_esc = html_lib.escape(str(r["details"] or ""))
+            date_str = r["t_date"].strftime("%d %b %Y")
+            det_html = f'<div class="hist-details">📝 {det_esc}</div>' if det_esc else ""
+
+            card_item = (
+                f'<div class="hist-card">'
+                f'<div class="hist-card-top">'
+                f'<div class="hist-subcat">#{int(r["id"])} • {sub_esc}</div>'
+                f'<div class="hist-amt" style="color:{amt_color};">{primary_amt_str}</div>'
+                f'</div>'
+                f'<div class="hist-badges">'
+                f'<span class="hist-pill">📅 {date_str}</span>'
+                f'<span class="hist-pill">🏦 {bnk_esc}</span>'
+                f'<span class="hist-pill">👨‍👩‍👦 {mem_esc}</span>'
+                f'<span class="hist-pill">📂 {cat_esc}</span>'
+                f'{loan_pill_html}'
+                f'</div>'
+                f'{det_html}'
+                f'</div>'
+            )
+            cards_html.append(card_item)
+
+        cards_html.append("</div>")
+        st.markdown("".join(cards_html), unsafe_allow_html=True)
 
 # Footer status badge
 st.caption(
