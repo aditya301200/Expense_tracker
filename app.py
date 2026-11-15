@@ -3,6 +3,8 @@ import streamlit.components.v1 as components
 import pandas as pd
 import sqlite3
 import re
+import os
+import base64
 import calendar
 from datetime import date, datetime, timedelta
 import plotly.express as px
@@ -15,15 +17,41 @@ except ImportError:
     psycopg2 = None
 
 # ==========================================
-# 1. PAGE CONFIGURATION & MOBILE-FIRST CSS
+# 1. PAGE CONFIGURATION, PWA ICON & CSS
 # ==========================================
+ICON_PATH = "app_icon.png"
+PAGE_ICON = ICON_PATH if os.path.exists(ICON_PATH) else "💰"
+
 st.set_page_config(
-    page_title="Das Family Expense & Loan Tracker",
-    page_icon="💰",
+    page_title="Das Family Tracker",
+    page_icon=PAGE_ICON,
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
+def get_app_icon_data_uri():
+    """Loads app_icon.png as base64 Data URI for mobile home-screen icon, or uses a sleek SVG fallback."""
+    if os.path.exists(ICON_PATH):
+        try:
+            with open(ICON_PATH, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("utf-8")
+                return f"data:image/png;base64,{b64}"
+        except Exception:
+            pass
+    svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+    <rect width="512" height="512" rx="115" fill="#0B192C"/>
+    <rect x="24" y="24" width="464" height="464" rx="95" fill="none" stroke="#D4AF37" stroke-width="10"/>
+    <path d="M120 390 L210 300 L280 340 L390 210" fill="none" stroke="#2ECC71" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="256" y="305" font-family="Arial, sans-serif" font-size="220" font-weight="bold" fill="#FFD700" text-anchor="middle">₹</text>
+    </svg>"""
+    b64_svg = base64.b64encode(svg.encode("utf-8")).decode("utf-8")
+    return f"data:image/svg+xml;base64,{b64_svg}"
+
+APP_ICON_URI = get_app_icon_data_uri()
+
+# Responsive CSS:
+# - Desktop / Laptop (> 768px): Stays 100% unchanged!
+# - Mobile Phone (<= 768px): Standalone App look, hides Streamlit chrome, 2-col KPIs & compact buttons
 st.markdown("""
 <style>
     .block-container {
@@ -38,13 +66,23 @@ st.markdown("""
         margin-top: 0.2rem;
         margin-bottom: 0.6rem;
         line-height: 1.25;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    .app-logo-img {
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
+        object-fit: cover;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.3);
     }
     /* Make selectbox inputs look and behave like uneditable dropdowns */
     div[data-baseweb="select"] input {
         caret-color: transparent !important;
         cursor: pointer !important;
     }
-    /* Desktop / Laptop Button Styling */
+    /* Desktop / Laptop Button Styling (Stays exactly the same on Laptop) */
     .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
         min-height: 44px !important;
         font-weight: 600 !important;
@@ -64,20 +102,33 @@ st.markdown("""
         padding: 10px 14px !important;
     }
 
-    /* Mobile Phone Overrides (Samsung S25+ & screens <= 768px) */
+    /* Mobile App Overrides (ONLY applies on phone screens <= 768px) */
     @media (max-width: 768px) {
+        header[data-testid="stHeader"] {
+            background: transparent !important;
+            height: 1.5rem !important;
+        }
+        footer {
+            display: none !important;
+        }
         .block-container {
-            padding-top: 2.6rem !important;
+            padding-top: 1.4rem !important;
             padding-left: 0.45rem !important;
             padding-right: 0.45rem !important;
+            padding-bottom: 3.5rem !important;
         }
         .app-top-title {
-            font-size: 1.18rem !important;
+            font-size: 1.15rem !important;
             margin-top: 0.1rem !important;
             margin-bottom: 0.45rem !important;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+        }
+        .app-logo-img {
+            width: 28px !important;
+            height: 28px !important;
+            border-radius: 6px !important;
         }
         /* Keep horizontal blocks in a 2-column grid instead of 1-column vertical stack */
         div[data-testid="stHorizontalBlock"] {
@@ -93,7 +144,7 @@ st.markdown("""
             min-width: calc(50% - 6px) !important;
             max-width: calc(50% - 6px) !important;
         }
-        /* Compact Buttons on Phone */
+        /* Compact App Buttons on Phone */
         .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
             min-height: 34px !important;
             height: 34px !important;
@@ -143,7 +194,7 @@ RECYCLE_BIN_RETENTION_DAYS = 3
 SALARY_CUTOFF_DAY = 24
 
 # ==========================================
-# 2. INDIAN CURRENCY, PARSER & MOBILE UX JS
+# 2. INDIAN CURRENCY, PARSER & MOBILE PWA JS
 # ==========================================
 def format_inr(val, decimals=0):
     """Formats numbers in Indian Standard (e.g., ₹12,26,956 or ₹3,18,885.00)."""
@@ -264,17 +315,76 @@ def style_compact_chart(fig, show_legend=False):
 
 def inject_mobile_ux_fixes_js():
     """
-    1. Locks all dropdowns (readOnly = true, inputmode = 'none') so mobile keyboard never pops up.
-    2. Attaches live Indian words converter underneath any number input box.
-    3. Enables double-click / double-tap on any chart card to trigger its '🔍 Enlarge' popup button.
+    1. Injects PWA Web Manifest & Apple/Android Home Screen icon tags so the app installs natively on phone.
+    2. Locks all dropdowns (readOnly = true, inputmode = 'none') so mobile keyboard never pops up.
+    3. Attaches live Indian words converter underneath any number input box.
+    4. Enables double-click / double-tap on any chart card to trigger its '🔍 Enlarge' popup button.
     """
     components.html(
-        """
+        f"""
         <script>
-        (function() {
+        (function() {{
             const parentDoc = window.parent.document;
+            const iconUri = "{APP_ICON_URI}";
 
-            function toIndianWords(num) {
+            // 1. INJECT MOBILE APP (PWA) META TAGS & ICON INTO PARENT HEAD
+            if (!parentDoc.querySelector('#das-pwa-manifest')) {{
+                const head = parentDoc.head;
+
+                const metaCapable = parentDoc.createElement('meta');
+                metaCapable.name = 'mobile-web-app-capable';
+                metaCapable.content = 'yes';
+                head.appendChild(metaCapable);
+
+                const metaApple = parentDoc.createElement('meta');
+                metaApple.name = 'apple-mobile-web-app-capable';
+                metaApple.content = 'yes';
+                head.appendChild(metaApple);
+
+                const metaTitle = parentDoc.createElement('meta');
+                metaTitle.name = 'apple-mobile-web-app-title';
+                metaTitle.content = 'Das Tracker';
+                head.appendChild(metaTitle);
+
+                const metaTheme = parentDoc.createElement('meta');
+                metaTheme.name = 'theme-color';
+                metaTheme.content = '#0B192C';
+                head.appendChild(metaTheme);
+
+                const appleIcon = parentDoc.createElement('link');
+                appleIcon.rel = 'apple-touch-icon';
+                appleIcon.href = iconUri;
+                head.appendChild(appleIcon);
+
+                const manifestObj = {{
+                    "name": "Das Family Expense & Loan Tracker",
+                    "short_name": "Das Tracker",
+                    "display": "standalone",
+                    "background_color": "#0E1117",
+                    "theme_color": "#0B192C",
+                    "orientation": "portrait-primary",
+                    "icons": [
+                        {{
+                            "src": iconUri,
+                            "sizes": "192x192",
+                            "type": "image/png"
+                        }},
+                        {{
+                            "src": iconUri,
+                            "sizes": "512x512",
+                            "type": "image/png"
+                        }}
+                    ]
+                }};
+                const manifestBlob = new Blob([JSON.stringify(manifestObj)], {{type: 'application/json'}});
+                const manifestLink = parentDoc.createElement('link');
+                manifestLink.id = 'das-pwa-manifest';
+                manifestLink.rel = 'manifest';
+                manifestLink.href = URL.createObjectURL(manifestBlob);
+                head.appendChild(manifestLink);
+            }}
+
+            function toIndianWords(num) {{
                 if (isNaN(num) || num <= 0) return "";
                 let n = Math.floor(num);
                 if (n === 0) return "";
@@ -298,25 +408,25 @@ def inject_mobile_ux_fixes_js():
                 let res = parts.join(" ") + " Rupees";
                 if (dec > 0) res += " & " + dec + " Paise";
                 return res;
-            }
+            }}
 
-            function formatINR(num) {
+            function formatINR(num) {{
                 if (isNaN(num) || num <= 0) return "";
-                return "₹" + num.toLocaleString("en-IN", {maximumFractionDigits: 2});
-            }
+                return "₹" + num.toLocaleString("en-IN", {{maximumFractionDigits: 2}});
+            }}
 
-            function applyMobileFixes() {
+            function applyMobileFixes() {{
                 const selectInputs = parentDoc.querySelectorAll('div[data-baseweb="select"] input');
-                selectInputs.forEach((inp) => {
-                    if (inp.getAttribute('readonly') !== 'readonly') {
+                selectInputs.forEach((inp) => {{
+                    if (inp.getAttribute('readonly') !== 'readonly') {{
                         inp.setAttribute('readonly', 'readonly');
                         inp.setAttribute('inputmode', 'none');
                         inp.readOnly = true;
-                    }
-                });
+                    }}
+                }});
 
                 const numInputs = parentDoc.querySelectorAll('div[data-testid="stNumberInput"] input');
-                numInputs.forEach((input) => {
+                numInputs.forEach((input) => {{
                     if (input.dataset.indianWordsAttached === "true") return;
                     input.dataset.indianWordsAttached = "true";
 
@@ -324,63 +434,63 @@ def inject_mobile_ux_fixes_js():
                     if (!wrapper) return;
 
                     let helper = wrapper.querySelector('.live-inr-words');
-                    if (!helper) {
+                    if (!helper) {{
                         helper = parentDoc.createElement('div');
                         helper.className = 'live-inr-words';
                         helper.style.cssText = 'color: #2ecc71; font-size: 0.80rem; font-weight: 600; margin-top: 3px; min-height: 1.1rem; transition: all 0.1s ease;';
                         wrapper.appendChild(helper);
-                    }
+                    }}
 
-                    const updateText = () => {
+                    const updateText = () => {{
                         const raw = parseFloat(input.value);
-                        if (!isNaN(raw) && raw > 0) {
+                        if (!isNaN(raw) && raw > 0) {{
                             helper.textContent = "🇮🇳 " + formatINR(raw) + " — " + toIndianWords(raw);
-                        } else {
+                        }} else {{
                             helper.textContent = "";
-                        }
-                    };
+                        }}
+                    }};
 
                     input.addEventListener('input', updateText);
                     input.addEventListener('change', updateText);
                     updateText();
-                });
+                }});
 
                 const charts = parentDoc.querySelectorAll('div[data-testid="stPlotlyChart"]');
-                charts.forEach((chartDiv) => {
+                charts.forEach((chartDiv) => {{
                     if (chartDiv.dataset.dblTapAttached === "true") return;
                     chartDiv.dataset.dblTapAttached = "true";
 
-                    const triggerPopupBtn = () => {
+                    const triggerPopupBtn = () => {{
                         const col = chartDiv.closest('div[data-testid="column"], div[data-testid="stColumn"]');
                         const root = col || chartDiv.parentElement;
                         if (!root) return;
                         const buttons = root.querySelectorAll('button');
-                        for (let b of buttons) {
-                            if (b.innerText && b.innerText.includes('🔍')) {
+                        for (let b of buttons) {{
+                            if (b.innerText && b.innerText.includes('🔍')) {{
                                 b.click();
                                 break;
-                            }
-                        }
-                    };
+                            }}
+                        }}
+                    }};
 
                     chartDiv.addEventListener('dblclick', triggerPopupBtn);
 
                     let lastTap = 0;
-                    chartDiv.addEventListener('touchend', function(e) {
+                    chartDiv.addEventListener('touchend', function(e) {{
                         const currentTime = new Date().getTime();
                         const tapLength = currentTime - lastTap;
-                        if (tapLength < 350 && tapLength > 0) {
+                        if (tapLength < 350 && tapLength > 0) {{
                             triggerPopupBtn();
-                        }
+                        }}
                         lastTap = currentTime;
-                    });
-                });
-            }
+                    }});
+                }});
+            }}
 
             applyMobileFixes();
             const observer = new MutationObserver(applyMobileFixes);
-            observer.observe(parentDoc.body, { childList: true, subtree: true });
-        })();
+            observer.observe(parentDoc.body, {{ childList: true, subtree: true }});
+        }})();
         </script>
         """,
         height=0,
@@ -402,7 +512,10 @@ def check_pin():
     if st.session_state.get("authenticated", False):
         return True
 
-    st.markdown('<div class="app-top-title">🔒 Das Family Tracker</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="app-top-title"><img src="{APP_ICON_URI}" class="app-logo-img"/> 🔒 Das Family Tracker</div>',
+        unsafe_allow_html=True
+    )
     pin_input = st.text_input("Enter Family PIN:", type="password", placeholder="Tap to enter PIN")
     if st.button("🔓 Unlock Dashboard", type="primary", use_container_width=True):
         if pin_input == str(st.secrets["APP_PIN"]):
@@ -860,7 +973,6 @@ def add_transaction(t_date, bank, t_type, category, sub_category, member, amount
     clear_all_caches()
 
 def add_single_recurring_bill(sub_category, category, bank, member, expected_amount, due_day, details):
-    """Adds a brand-new scheduled/recurring monthly transaction directly from the button form."""
     conn = get_connection()
     c = conn.cursor()
     d_day = min(max(1, int(due_day or 5)), 31)
@@ -1015,62 +1127,142 @@ recurring_df = load_recurring_bills()
 # ==========================================
 # 6. POPUP MODAL DIALOGS (@st.dialog)
 # ==========================================
-@st.dialog("⏰ Scheduled & Upcoming Monthly Transactions", width="large")
+@st.dialog("⏰ Upcoming & Scheduled Transactions", width="large")
 def open_upcoming_bills_modal(default_month_key=None):
     st.caption(
-        "Add new scheduled monthly bills, or click **➕ Add as Expense** next to any due bill once paid!"
+        "Use the buttons below to **Add a Scheduled Monthly Bill** OR **Fill Manual Expense Details** directly!"
     )
 
-    # -------------------------------------------------------------
-    # TOP BUTTON / DRAWER: ADD A NEW SCHEDULED TRANSACTION
-    # -------------------------------------------------------------
-    with st.expander("➕ Add New Scheduled Monthly Transaction (Tap Here)", expanded=False):
-        ns_c1, ns_c2 = st.columns(2)
-        with ns_c1:
-            ns_cat = st.selectbox("Category", list(EXPENSE_CATEGORY_MAP.keys()), key="ns_cat_sel")
-            ns_bank = st.selectbox("Default Bank", BANK_OPTIONS, key="ns_bank_sel")
-        with ns_c2:
-            ns_sub_opts = EXPENSE_CATEGORY_MAP[ns_cat] + ["➕ Custom Bill / Sub-category..."]
-            ns_sub_sel = st.selectbox("Bill / Sub-category", ns_sub_opts, key="ns_sub_sel")
-            ns_member = st.selectbox("Paid By Member", EXPENSE_MEMBERS, index=2, key="ns_mem_sel")
+    # TWO TOGGLE BUTTONS AT THE TOP OF UPCOMING POPUP:
+    # 1. Add Scheduled Monthly Template | 2. Fill Manual Expense Details Immediately
+    if "up_top_mode" not in st.session_state:
+        st.session_state["up_top_mode"] = None
 
-        ns_custom_sub = ""
-        if ns_sub_sel == "➕ Custom Bill / Sub-category...":
-            ns_custom_sub = st.text_input("Enter Custom Bill Name", placeholder="e.g., Broadband / Maid / Gym Fee", key="ns_cust_txt")
-
-        ns_c3, ns_c4 = st.columns(2)
-        with ns_c3:
-            ns_amount = st.number_input(
-                "Expected Monthly Amount (₹) [Can vary later]",
-                min_value=0.0, value=None,
-                placeholder="e.g., 6000", step=100.0,
-                key="ns_amt_inp"
+    top_b1, top_b2 = st.columns(2)
+    with top_b1:
+        if st.button("➕ Add Scheduled Bill Template", use_container_width=True, key="btn_toggle_sched_form"):
+            st.session_state["up_top_mode"] = (
+                None if st.session_state["up_top_mode"] == "schedule" else "schedule"
             )
-            if ns_amount and ns_amount > 0:
-                st.caption(f"🇮🇳 **{format_inr(ns_amount)}** — *{number_to_indian_words(ns_amount)}*")
-        with ns_c4:
-            ns_due_day = st.number_input(
-                "Monthly Due Day (1 to 31)",
-                min_value=1, max_value=31, value=5, step=1,
-                key="ns_day_inp"
+    with top_b2:
+        if st.button("✍️ Fill Manual Expense Details", type="primary", use_container_width=True, key="btn_toggle_manual_form"):
+            st.session_state["up_top_mode"] = (
+                None if st.session_state["up_top_mode"] == "manual" else "manual"
             )
 
-        ns_details = st.text_input("Notes / Reminder Details (Optional)", placeholder="e.g., Pay before 10th of every month", key="ns_det_inp")
+    # FORM A: FILL MANUAL EXPENSE DETAILS DIRECTLY
+    if st.session_state["up_top_mode"] == "manual":
+        with st.container(border=True):
+            st.markdown("##### ✍️ Fill Manual Transaction Details")
+            m_c1, m_c2 = st.columns(2)
+            with m_c1:
+                man_type = st.radio("Type", ["Expense", "Income", "Self Transfer"], horizontal=True, key="man_up_type")
+                man_cat_map = get_category_map_for_type(man_type)
+                man_cat = st.selectbox("Category", list(man_cat_map.keys()), key="man_up_cat")
+            with m_c2:
+                man_bank = st.selectbox("Bank Account", BANK_OPTIONS, key="man_up_bank")
+                man_sub_opts = man_cat_map[man_cat] + ["➕ Custom Sub-category..."]
+                man_sub_sel = st.selectbox("Sub-category", man_sub_opts, key="man_up_sub")
 
-        if st.button("💾 Save to Scheduled Transactions", type="primary", use_container_width=True, key="btn_save_new_sched"):
-            final_ns_sub = ns_custom_sub.strip() if ns_sub_sel == "➕ Custom Bill / Sub-category..." else ns_sub_sel
-            clean_ns_amt = float(ns_amount) if ns_amount is not None else 0.0
-            if not final_ns_sub:
-                st.error("⚠️ Please enter a valid Bill / Sub-category name.")
-            elif clean_ns_amt <= 0:
-                st.error("⚠️ Please enter an Expected Amount greater than ₹0.")
-            else:
-                add_single_recurring_bill(
-                    final_ns_sub, ns_cat, ns_bank, ns_member,
-                    clean_ns_amt, int(ns_due_day), ns_details.strip() or "Scheduled Monthly Expense"
+            man_custom_sub = ""
+            if man_sub_sel == "➕ Custom Sub-category...":
+                man_custom_sub = st.text_input("Enter Custom Sub-category Name", placeholder="e.g., Water Bill / Plumber / Repair", key="man_up_cust")
+
+            m_c3, m_c4 = st.columns(2)
+            with m_c3:
+                man_date = st.date_input("Date", date.today(), key="man_up_dt")
+                man_amt = st.number_input("Amount (₹)", min_value=0.0, value=None, placeholder="Tap to type amount", step=100.0, key="man_up_amt")
+            with m_c4:
+                man_mem_list = EARNING_MEMBERS if man_type == "Income" else EXPENSE_MEMBERS
+                man_mem = st.selectbox("Member", man_mem_list, index=2, key="man_up_mem")
+                man_loan = st.number_input("Pending Loan (₹) [Optional]", min_value=0.0, value=None, placeholder="0.00", step=500.0, key="man_up_loan")
+
+            man_details = st.text_input("Manual Details / Notes", placeholder="Type full transaction details...", key="man_up_det")
+            man_also_repeat = st.checkbox("⏰ Also save to monthly recurring checklist?", value=False, key="man_up_rep")
+
+            s_col1, s_col2 = st.columns([3, 1])
+            with s_col1:
+                if st.button("💾 Save Manual Transaction", type="primary", use_container_width=True, key="man_up_save_btn"):
+                    final_m_sub = man_custom_sub.strip() if man_sub_sel == "➕ Custom Sub-category..." else man_sub_sel
+                    clean_m_amt = float(man_amt) if man_amt is not None else 0.0
+                    clean_m_loan = float(man_loan) if man_loan is not None else 0.0
+                    if not final_m_sub:
+                        final_m_sub = "Miscellaneous"
+                    if clean_m_amt <= 0 and clean_m_loan <= 0:
+                        st.error("⚠️ Please enter an Amount or Pending Loan greater than ₹0.")
+                    else:
+                        add_transaction(
+                            man_date, man_bank, man_type, man_cat, final_m_sub,
+                            man_mem, clean_m_amt, clean_m_loan, man_details.strip()
+                        )
+                        if man_also_repeat and man_type == "Expense":
+                            add_single_recurring_bill(
+                                final_m_sub, man_cat, man_bank, man_mem,
+                                clean_m_amt, int(man_date.day), man_details.strip() or "Scheduled Monthly Expense"
+                            )
+                        st.session_state["up_top_mode"] = None
+                        st.toast(f"✅ Saved {final_m_sub}: {format_inr(clean_m_amt, 2)}", icon="💰")
+                        st.rerun()
+            with s_col2:
+                if st.button("✖️ Close", use_container_width=True, key="man_up_close_btn"):
+                    st.session_state["up_top_mode"] = None
+                    st.rerun()
+
+    # FORM B: ADD NEW SCHEDULED BILL TEMPLATE
+    elif st.session_state["up_top_mode"] == "schedule":
+        with st.container(border=True):
+            st.markdown("##### ➕ Add New Scheduled Monthly Bill Template")
+            ns_c1, ns_c2 = st.columns(2)
+            with ns_c1:
+                ns_cat = st.selectbox("Category", list(EXPENSE_CATEGORY_MAP.keys()), key="ns_cat_sel")
+                ns_bank = st.selectbox("Default Bank", BANK_OPTIONS, key="ns_bank_sel")
+            with ns_c2:
+                ns_sub_opts = EXPENSE_CATEGORY_MAP[ns_cat] + ["➕ Custom Bill / Sub-category..."]
+                ns_sub_sel = st.selectbox("Bill / Sub-category", ns_sub_opts, key="ns_sub_sel")
+                ns_member = st.selectbox("Paid By Member", EXPENSE_MEMBERS, index=2, key="ns_mem_sel")
+
+            ns_custom_sub = ""
+            if ns_sub_sel == "➕ Custom Bill / Sub-category...":
+                ns_custom_sub = st.text_input("Enter Custom Bill Name", placeholder="e.g., Broadband / Maid / Gym Fee", key="ns_cust_txt")
+
+            ns_c3, ns_c4 = st.columns(2)
+            with ns_c3:
+                ns_amount = st.number_input(
+                    "Expected Monthly Amount (₹) [Can vary]",
+                    min_value=0.0, value=None,
+                    placeholder="e.g., 6000", step=100.0,
+                    key="ns_amt_inp"
                 )
-                st.toast(f"✅ Added '{final_ns_sub}' (Due Day {int(ns_due_day)}) to Scheduled Transactions!", icon="⏰")
-                st.rerun()
+            with ns_c4:
+                ns_due_day = st.number_input(
+                    "Monthly Due Day (1 to 31)",
+                    min_value=1, max_value=31, value=5, step=1,
+                    key="ns_day_inp"
+                )
+
+            ns_details = st.text_input("Default Reminder Note", placeholder="e.g., Pay before 10th of every month", key="ns_det_inp")
+
+            sb_col1, sb_col2 = st.columns([3, 1])
+            with sb_col1:
+                if st.button("💾 Save to Scheduled List", type="primary", use_container_width=True, key="btn_save_new_sched"):
+                    final_ns_sub = ns_custom_sub.strip() if ns_sub_sel == "➕ Custom Bill / Sub-category..." else ns_sub_sel
+                    clean_ns_amt = float(ns_amount) if ns_amount is not None else 0.0
+                    if not final_ns_sub:
+                        st.error("⚠️ Please enter a valid Bill / Sub-category name.")
+                    elif clean_ns_amt <= 0:
+                        st.error("⚠️ Please enter an Expected Amount greater than ₹0.")
+                    else:
+                        add_single_recurring_bill(
+                            final_ns_sub, ns_cat, ns_bank, ns_member,
+                            clean_ns_amt, int(ns_due_day), ns_details.strip() or "Scheduled Monthly Expense"
+                        )
+                        st.session_state["up_top_mode"] = None
+                        st.toast(f"✅ Added '{final_ns_sub}' to Scheduled Bills!", icon="⏰")
+                        st.rerun()
+            with sb_col2:
+                if st.button("✖️ Close", use_container_width=True, key="sched_up_close_btn"):
+                    st.session_state["up_top_mode"] = None
+                    st.rerun()
 
     up_tab1, up_tab2 = st.tabs(["🔔 Due / Upcoming This Month", "⚙️ Edit All Scheduled Templates"])
 
@@ -1083,13 +1275,13 @@ def open_upcoming_bills_modal(default_month_key=None):
         with u_col1:
             sel_m_key = st.selectbox("🗓️ Target Budget Month", avail_m_keys, index=default_idx, key="up_modal_mkey")
         with u_col2:
-            pay_date_default = st.date_input("📅 Payment Date for Adding", date.today(), key="up_pay_dt")
+            pay_date_default = st.date_input("📅 Default Payment Date", date.today(), key="up_pay_dt")
 
         inject_mobile_ux_fixes_js()
 
         status_df = compute_upcoming_status(recurring_df, df, sel_m_key)
         if status_df.empty:
-            st.info("No scheduled transactions yet. Use **➕ Add New Scheduled Monthly Transaction** above to add one!")
+            st.info("No scheduled transactions yet. Tap **➕ Add Scheduled Bill Template** above to add one!")
         else:
             unpaid_df = status_df[~status_df["Is_Paid"]].copy()
             paid_df = status_df[status_df["Is_Paid"]].copy()
@@ -1100,74 +1292,78 @@ def open_upcoming_bills_modal(default_month_key=None):
                 f"(Est. Remaining: **{format_inr(unpaid_est_sum)}**)"
             )
 
-            # -------------------------------------------------------------
-            # QUICK 1-TAP '➕ ADD EXPENSE' CARDS FOR EACH UNPAID BILL
-            # -------------------------------------------------------------
             if unpaid_df.empty:
                 st.success(f"🎉 All scheduled transactions for **{sel_m_key}** are paid and logged!")
             else:
-                st.markdown("##### ⚡ Quick Add Individual Scheduled Bill as Expense")
-                st.caption("Adjust the exact amount if it varied this month, then tap **➕ Add Expense** on that row:")
+                st.markdown("##### ⚡ Quick Add Scheduled Bill (or Edit Details Manually)")
+                st.caption("Edit the **Amount**, **Bank**, or **Details/Notes** for any bill below, then tap **➕ Add**:")
 
                 for _, bill_row in unpaid_df.iterrows():
                     b_id = int(bill_row["bill_id"])
                     with st.container(border=True):
-                        r_c1, r_c2 = st.columns([1.6, 1.4])
-                        with r_c1:
+                        top_r1, top_r2 = st.columns([1.5, 1.5])
+                        with top_r1:
                             st.markdown(
                                 f"**{bill_row['Sub-category']}** &nbsp; `{bill_row['Status']}`  \n"
-                                f"<span style='font-size:0.80rem;color:gray;'>{bill_row['Category']} • {bill_row['Member']} • {bill_row['Details']}</span>",
+                                f"<span style='font-size:0.78rem;color:gray;'>{bill_row['Category']} • {bill_row['Member']}</span>",
                                 unsafe_allow_html=True
                             )
-                        with r_c2:
-                            act_c1, act_c2, act_c3 = st.columns([1.3, 0.9, 1.1])
-                            with act_c1:
-                                actual_amt = st.number_input(
-                                    "Amt (₹)",
-                                    min_value=0.0,
-                                    value=float(bill_row["Expected_Amount"]),
-                                    step=100.0,
-                                    format="%.2f",
-                                    key=f"quick_amt_{sel_m_key}_{b_id}",
-                                    label_visibility="collapsed"
-                                )
-                            with act_c2:
-                                bnk_idx = BANK_OPTIONS.index(bill_row["Bank"]) if bill_row["Bank"] in BANK_OPTIONS else 0
-                                actual_bnk = st.selectbox(
-                                    "Bank",
-                                    BANK_OPTIONS,
-                                    index=bnk_idx,
-                                    key=f"quick_bnk_{sel_m_key}_{b_id}",
-                                    label_visibility="collapsed"
-                                )
-                            with act_c3:
-                                if st.button(
-                                    "➕ Add Expense",
-                                    key=f"quick_btn_{sel_m_key}_{b_id}",
-                                    type="primary",
-                                    use_container_width=True
-                                ):
-                                    if (actual_amt or 0.0) <= 0:
-                                        st.error("Enter amount > ₹0")
-                                    else:
-                                        add_transaction(
-                                            pay_date_default,
-                                            actual_bnk,
-                                            "Expense",
-                                            bill_row["Category"],
-                                            bill_row["Sub-category"],
-                                            bill_row["Member"],
-                                            float(actual_amt),
-                                            0.0,
-                                            bill_row["Details"]
-                                        )
-                                        st.toast(
-                                            f"✅ Added {bill_row['Sub-category']} ({format_inr(actual_amt)}) to Expenses!",
-                                            icon="💰"
-                                        )
-                                        st.rerun()
+                        with top_r2:
+                            manual_note = st.text_input(
+                                "Details",
+                                value=str(bill_row["Details"]),
+                                placeholder="Edit manual details / note...",
+                                key=f"quick_det_{sel_m_key}_{b_id}",
+                                label_visibility="collapsed"
+                            )
 
-                # Optional Bulk Table for paying multiple bills at once
+                        act_c1, act_c2, act_c3 = st.columns([1.3, 0.9, 1.1])
+                        with act_c1:
+                            actual_amt = st.number_input(
+                                "Amt (₹)",
+                                min_value=0.0,
+                                value=float(bill_row["Expected_Amount"]),
+                                step=100.0,
+                                format="%.2f",
+                                key=f"quick_amt_{sel_m_key}_{b_id}",
+                                label_visibility="collapsed"
+                            )
+                        with act_c2:
+                            bnk_idx = BANK_OPTIONS.index(bill_row["Bank"]) if bill_row["Bank"] in BANK_OPTIONS else 0
+                            actual_bnk = st.selectbox(
+                                "Bank",
+                                BANK_OPTIONS,
+                                index=bnk_idx,
+                                key=f"quick_bnk_{sel_m_key}_{b_id}",
+                                label_visibility="collapsed"
+                            )
+                        with act_c3:
+                            if st.button(
+                                "➕ Add Expense",
+                                key=f"quick_btn_{sel_m_key}_{b_id}",
+                                type="primary",
+                                use_container_width=True
+                            ):
+                                if (actual_amt or 0.0) <= 0:
+                                    st.error("Enter amount > ₹0")
+                                else:
+                                    add_transaction(
+                                        pay_date_default,
+                                        actual_bnk,
+                                        "Expense",
+                                        bill_row["Category"],
+                                        bill_row["Sub-category"],
+                                        bill_row["Member"],
+                                        float(actual_amt),
+                                        0.0,
+                                        manual_note.strip() or bill_row["Details"]
+                                    )
+                                    st.toast(
+                                        f"✅ Added {bill_row['Sub-category']} ({format_inr(actual_amt)}) to Expenses!",
+                                        icon="💰"
+                                    )
+                                    st.rerun()
+
                 with st.expander("📋 Or Bulk-Select & Add Multiple Scheduled Bills at Once", expanded=False):
                     editor_input_df = pd.DataFrame({
                         "Pay?": True,
@@ -1385,7 +1581,6 @@ def open_add_modal():
 
     details = st.text_input("Details / Notes (Optional)", placeholder="e.g., Monthly bill or EMI")
 
-    # Option to also save this entry as a monthly scheduled transaction!
     also_schedule = False
     sched_due_day = t_date.day
     if t_type == "Expense":
@@ -2148,9 +2343,12 @@ def open_delete_modal(target_df, scope_label="Selected Month"):
             st.warning("⚠️ Please select at least one entry above.")
 
 # ==========================================
-# 7. MOBILE-OPTIMIZED TOP HEADER & ACTION BAR
+# 7. TOP HEADER WITH APP ICON & ACTION BAR
 # ==========================================
-st.markdown('<div class="app-top-title">💰 Das Family Expense & Loan Tracker</div>', unsafe_allow_html=True)
+st.markdown(
+    f'<div class="app-top-title"><img src="{APP_ICON_URI}" class="app-logo-img"/> Das Family Expense & Loan Tracker</div>',
+    unsafe_allow_html=True
+)
 
 bin_count = len(bin_df)
 bin_btn_label = f"🗑️ Bin ({bin_count})" if bin_count > 0 else "🗑️ Bin"
@@ -2224,7 +2422,6 @@ else:
 
         selected_month_key = df[df["Month_Label"] == selected_month]["Month_Key"].iloc[0]
 
-        # SMART UPCOMING BILLS REMINDER BANNER FOR SELECTED MONTH
         month_upcoming_df = compute_upcoming_status(recurring_df, df, selected_month_key)
         unpaid_month_bills = month_upcoming_df[~month_upcoming_df["Is_Paid"]] if not month_upcoming_df.empty else pd.DataFrame()
 
@@ -2788,6 +2985,6 @@ else:
 
 # Footer status badge
 st.caption(
-    f"⚡ Fast Cached Mode | ⏰ Scheduled Bills Active | 📅 Salary Auto-Shift (Day ≥ {SALARY_CUTOFF_DAY}) | "
+    f"📱 Mobile App Ready | ⏰ Scheduled Bills Active | 📅 Salary Auto-Shift (Day ≥ {SALARY_CUTOFF_DAY}) | "
     + ("🟢 Cloud PostgreSQL" if USE_POSTGRES else "🟡 Local SQLite (`expenses.db`)")
 )
