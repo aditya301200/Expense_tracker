@@ -42,7 +42,7 @@ def get_app_icon_data_uri():
                 return f"data:image/png;base64,{b64}"
         except Exception:
             pass
-    svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+    svg = """<svg xmlns="[http://www.w3.org/2000/svg](http://www.w3.org/2000/svg)" viewBox="0 0 512 512">
     <rect width="512" height="512" rx="115" fill="#0B192C"/>
     <rect x="24" y="24" width="464" height="464" rx="95" fill="none" stroke="#D4AF37" stroke-width="10"/>
     <path d="M120 390 L210 300 L280 340 L390 210" fill="none" stroke="#2ECC71" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
@@ -54,10 +54,15 @@ def get_app_icon_data_uri():
 APP_ICON_URI = get_app_icon_data_uri()
 
 
+def _update_button_selector_state(state_key, chosen_val):
+    """Callback that updates button_selector state BEFORE script execution so @st.dialog popups NEVER close!"""
+    st.session_state[state_key] = chosen_val
+
+
 def button_selector(label, options, key, default=None):
     """
-    Replaces st.radio with a row of normal st.button elements.
-    The active option is highlighted with type='primary' (solid red) and others use type='secondary'.
+    Replaces st.radio with a row of normal st.button elements using an on_click callback.
+    Works inside @st.dialog popups without closing them or causing full-page reloads!
     """
     state_key = f"btn_sel_val_{key}"
     if state_key not in st.session_state or st.session_state[state_key] not in options:
@@ -73,22 +78,25 @@ def button_selector(label, options, key, default=None):
     for idx, opt in enumerate(options):
         is_selected = (st.session_state[state_key] == opt)
         with cols[idx]:
-            if st.button(
+            st.button(
                 opt,
                 key=f"{key}_opt_{idx}",
                 type="primary" if is_selected else "secondary",
-                use_container_width=True
-            ):
-                if st.session_state[state_key] != opt:
-                    st.session_state[state_key] = opt
-                    st.rerun()
+                use_container_width=True,
+                on_click=_update_button_selector_state,
+                args=(state_key, opt)
+            )
 
     return st.session_state[state_key]
 
 
 # Responsive CSS:
-# - Desktop / Laptop (> 768px): Spacious layout, button-styled tabs, full DataFrame history table
-# - Mobile Phone (<= 768px): Standalone App look, 2-col KPIs, compact buttons, and Card Feed for History
+# - Desktop / Laptop (> 768px): Spacious 2-column side-by-side layout & full DataFrame tables
+# - Mobile Phone (<= 768px):
+#     * Select Budget Month (top, 100% width) + Chart Style (bottom, 100% width)
+#     * Manage Loans (top, 100% width) + Loan Chart Style (bottom, 100% width)
+#     * Net Savings & Delta side-by-side on one line for both mobile and desktop
+#     * Scheduled Bills, Copy Month, Modify Entry, Delete Entry in 2x2 grid with semantic UI/UX colors
 st.markdown("""
 <style>
     .block-container {
@@ -124,8 +132,9 @@ st.markdown("""
         min-height: 44px !important;
         font-weight: 600 !important;
         border-radius: 10px !important;
+        transition: all 0.15s ease !important;
     }
-    div[data-testid="stMetric"] {
+    div[data-testid="stMetric"], .custom-metric-card {
         background-color: rgba(128, 128, 128, 0.08);
         border: 1px solid rgba(128, 128, 128, 0.2);
         padding: 10px 14px;
@@ -133,6 +142,40 @@ st.markdown("""
     }
     div[data-testid="stMetricValue"] {
         font-size: 1.3rem !important;
+    }
+
+    /* SIDE-BY-SIDE NET SAVINGS & DELTA CARD (Desktop & Mobile) */
+    .net-savings-label {
+        font-size: 0.875rem;
+        color: rgba(250, 250, 250, 0.65);
+        margin-bottom: 4px;
+        font-weight: 400;
+    }
+    .net-savings-row {
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .net-savings-val {
+        font-size: 1.3rem;
+        font-weight: 700;
+        line-height: 1.35;
+    }
+    .net-savings-delta {
+        font-size: 0.82rem;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 999px;
+        white-space: nowrap;
+    }
+    .delta-pos {
+        color: #2ecc71;
+        background-color: rgba(46, 204, 113, 0.15);
+    }
+    .delta-neg {
+        color: #ff6b6b;
+        background-color: rgba(255, 107, 107, 0.15);
     }
 
     /* 1. STYLE TABS ("Monthly", "Loans", "Trends", "History") AS SOLID PILL BUTTONS */
@@ -165,16 +208,18 @@ st.markdown("""
         color: #FFFFFF !important;
     }
 
-    /* 2. DESKTOP DEFAULT: Show DataFrame Table, Hide Mobile History Cards */
-    div[data-testid="stElementContainer"]:has(.mobile-history-feed),
-    .mobile-history-feed {
+    /* 2. DESKTOP DEFAULT: Show DataFrame Tables, Hide Mobile Card Feeds */
+    div[data-testid="stElementContainer"]:has(.mobile-card-feed),
+    .mobile-card-feed,
+    div[data-testid="stElementContainer"]:has(.v-stack-trigger),
+    div[data-testid="stElementContainer"]:has(.desktop-table-marker) {
         display: none !important;
     }
     .hist-card {
         background-color: rgba(128, 128, 128, 0.08);
         border: 1px solid rgba(128, 128, 128, 0.22);
         border-radius: 12px;
-        padding: 11px 13px;
+        padding: 10px 13px;
         margin-bottom: 8px;
     }
     .hist-card-top {
@@ -182,15 +227,15 @@ st.markdown("""
         justify-content: space-between;
         align-items: flex-start;
         gap: 8px;
-        margin-bottom: 6px;
+        margin-bottom: 5px;
     }
     .hist-subcat {
-        font-size: 0.94rem;
+        font-size: 0.92rem;
         font-weight: 700;
         line-height: 1.2;
     }
     .hist-amt {
-        font-size: 0.96rem;
+        font-size: 0.95rem;
         font-weight: 700;
         white-space: nowrap;
     }
@@ -200,7 +245,7 @@ st.markdown("""
         gap: 5px;
         font-size: 0.72rem;
         color: #9ca3af;
-        margin-bottom: 4px;
+        margin-bottom: 3px;
     }
     .hist-pill {
         background: rgba(128, 128, 128, 0.16);
@@ -209,7 +254,7 @@ st.markdown("""
         font-weight: 600;
     }
     .hist-details {
-        font-size: 0.75rem;
+        font-size: 0.74rem;
         color: #9ca3af;
         word-break: break-word;
         margin-top: 3px;
@@ -231,53 +276,91 @@ st.markdown("""
             padding-bottom: 3.5rem !important;
         }
         .app-top-title {
-            font-size: 1.15rem !important;
+            font-size: 1.12rem !important;
             margin-top: 0.1rem !important;
-            margin-bottom: 0.45rem !important;
+            margin-bottom: 0.35rem !important;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
         .app-logo-img {
-            width: 28px !important;
-            height: 28px !important;
+            width: 26px !important;
+            height: 26px !important;
             border-radius: 6px !important;
         }
-        /* Keep horizontal blocks in a multi-column grid instead of 1-column vertical stack */
+        /* Default horizontal blocks on mobile: 2-col or 3-col grid for buttons & KPI metrics */
         div[data-testid="stHorizontalBlock"] {
             display: flex !important;
             flex-direction: row !important;
             flex-wrap: wrap !important;
             gap: 6px !important;
-            align-items: center !important;
+            align-items: stretch !important;
         }
         div[data-testid="stHorizontalBlock"] > div[data-testid="column"],
         div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
             flex: 1 1 calc(33.33% - 6px) !important;
             min-width: calc(33.33% - 6px) !important;
         }
+
+        /* FORCE 100% FULL-WIDTH VERTICAL STACK ON MOBILE FOR:
+           1. Select Budget Month (top, full width) + Chart Style (bottom, full width)
+           2. Manage Loans (top, full width) + Loan Chart Style (bottom, full width)
+           3. All Chart / Graph rows & Summary Table sections */
+        div[data-testid="stHorizontalBlock"].das-force-vertical-mobile,
+        div[data-testid="stHorizontalBlock"]:has(.v-stack-trigger),
+        div[data-testid="stHorizontalBlock"]:has(div[data-testid="stPlotlyChart"]) {
+            flex-direction: column !important;
+            gap: 10px !important;
+        }
+        div[data-testid="stHorizontalBlock"].das-force-vertical-mobile > div[data-testid="column"],
+        div[data-testid="stHorizontalBlock"].das-force-vertical-mobile > div[data-testid="stColumn"],
+        div[data-testid="stHorizontalBlock"]:has(.v-stack-trigger) > div[data-testid="column"],
+        div[data-testid="stHorizontalBlock"]:has(.v-stack-trigger) > div[data-testid="stColumn"],
+        div[data-testid="stHorizontalBlock"]:has(div[data-testid="stPlotlyChart"]) > div[data-testid="column"],
+        div[data-testid="stHorizontalBlock"]:has(div[data-testid="stPlotlyChart"]) > div[data-testid="stColumn"] {
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
+            width: 100% !important;
+        }
+
+        /* Keep nested button rows (e.g. Donut / Solid Pie / Bar buttons OR Chart Title + Enlarge button) horizontal on 1 line! */
+        div[data-testid="stHorizontalBlock"] div[data-testid="stHorizontalBlock"] {
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            width: 100% !important;
+        }
+        div[data-testid="stHorizontalBlock"] div[data-testid="stHorizontalBlock"] > div[data-testid="column"],
+        div[data-testid="stHorizontalBlock"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+            flex: 1 1 0% !important;
+            min-width: 0 !important;
+            max-width: none !important;
+            width: auto !important;
+        }
+
         /* Compact App Buttons on Phone */
         .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
-            min-height: 34px !important;
-            height: 34px !important;
+            min-height: 35px !important;
+            height: 35px !important;
             padding: 2px 8px !important;
             font-size: 0.75rem !important;
             border-radius: 8px !important;
             width: 100% !important;
         }
         /* Compact 2-Column KPI Cards on Phone */
-        div[data-testid="stMetric"] {
+        div[data-testid="stMetric"], .custom-metric-card {
             padding: 8px 10px !important;
             border-radius: 10px !important;
         }
-        div[data-testid="stMetricLabel"] p {
+        div[data-testid="stMetricLabel"] p, .net-savings-label {
             font-size: 0.75rem !important;
         }
-        div[data-testid="stMetricValue"] {
+        div[data-testid="stMetricValue"], .net-savings-val {
             font-size: 1.05rem !important;
         }
-        div[data-testid="stMetricDelta"] {
-            font-size: 0.72rem !important;
+        .net-savings-delta {
+            font-size: 0.70rem !important;
+            padding: 1px 6px !important;
         }
         div[data-baseweb="tab-list"] {
             gap: 5px !important;
@@ -294,12 +377,13 @@ st.markdown("""
         h3, .stSubheader {
             font-size: 1.0rem !important;
         }
-        /* MOBILE OVERRIDE: Hide the wide History DataFrame Table & Show Mobile Cards */
-        div[data-testid="stElementContainer"]:has(.desktop-history-marker) + div[data-testid="stElementContainer"] {
+        /* MOBILE OVERRIDE: Hide ALL Desktop DataFrame Tables marked with .desktop-table-marker & Show Mobile Card Feeds */
+        div[data-testid="stElementContainer"]:has(.desktop-table-marker) + div[data-testid="stElementContainer"],
+        div[data-testid="stElementContainer"]:has(.desktop-table-marker) + div[data-testid="stDataFrame"] {
             display: none !important;
         }
-        div[data-testid="stElementContainer"]:has(.mobile-history-feed),
-        .mobile-history-feed {
+        div[data-testid="stElementContainer"]:has(.mobile-card-feed),
+        .mobile-card-feed {
             display: block !important;
         }
     }
@@ -320,6 +404,7 @@ CHART_HEIGHT = 240
 POPUP_CHART_HEIGHT = 500
 RECYCLE_BIN_RETENTION_DAYS = 3
 SALARY_CUTOFF_DAY = 24
+AUTO_REFRESH_INTERVAL_SECONDS = 60
 
 # ==========================================
 # 2. INDIAN CURRENCY, PARSER & MOBILE PWA JS
@@ -355,6 +440,27 @@ def format_inr(val, decimals=0):
 
     sign = "-" if is_neg else ""
     return f"{sign}₹{formatted_int}{dec_str}"
+
+
+def render_net_savings_metric(label, val):
+    """
+    Renders Net Savings and its Delta side-by-side on the same line: e.g. ₹2,349 (₹2,349)
+    Works identically on both Mobile and Desktop!
+    """
+    val_str = format_inr(val)
+    is_pos = val >= 0
+    delta_cls = "delta-pos" if is_pos else "delta-neg"
+    arrow = "↑" if is_pos else "↓"
+    st.markdown(
+        f'<div class="custom-metric-card">'
+        f'<div class="net-savings-label">{html_lib.escape(label)}</div>'
+        f'<div class="net-savings-row">'
+        f'<span class="net-savings-val">{val_str}</span>'
+        f'<span class="net-savings-delta {delta_cls}">({arrow} {val_str})</span>'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True
+    )
 
 
 def clean_currency_value(val):
@@ -441,12 +547,26 @@ def style_compact_chart(fig, show_legend=False):
     return fig
 
 
+def render_responsive_table_or_cards(desktop_df, cards_list_html):
+    """
+    Renders a standard st.dataframe on Desktop (> 768px) and automatically
+    switches to a clean Mobile Card Feed on Phone screens (<= 768px).
+    """
+    st.markdown('<div class="desktop-table-marker"></div>', unsafe_allow_html=True)
+    st.dataframe(desktop_df, use_container_width=True, hide_index=True)
+
+    full_html = '<div class="mobile-card-feed">' + "".join(cards_list_html) + '</div>'
+    st.markdown(full_html, unsafe_allow_html=True)
+
+
 def inject_mobile_ux_fixes_js():
     """
-    1. Injects PWA Web Manifest & Apple/Android Home Screen icon tags so the app installs natively on phone.
+    1. Injects PWA Web Manifest & Apple/Android Home Screen icon tags.
     2. Locks all dropdowns (readOnly = true, inputmode = 'none') so mobile keyboard never pops up.
-    3. Attaches live Indian words converter underneath any number input box.
-    4. Enables double-click / double-tap on any chart card to trigger its '🔍 Enlarge' popup button.
+    3. Marks .v-stack-trigger parent horizontal blocks with .das-force-vertical-mobile so Select Budget Month & Chart Style
+       (and Manage Loans & Loan Chart Style) stack 100% full width vertically on mobile.
+    4. Applies semantic UI/UX colors to Scheduled Bills (Indigo), Copy Month (Teal), Modify (Amber), and Delete (Crimson).
+    5. Attaches live Indian words converter underneath any number input box & double-tap chart listener.
     """
     components.html(
         f"""
@@ -512,6 +632,30 @@ def inject_mobile_ux_fixes_js():
                 head.appendChild(manifestLink);
             }}
 
+            // 2. ZERO-LAG WAKE-UP AUTO-SYNC FOR INSTALLED MOBILE PWA
+            if (!window.parent.dasWakeSyncAttached) {{
+                window.parent.dasWakeSyncAttached = true;
+                let lastHiddenAt = Date.now();
+
+                parentDoc.addEventListener('visibilitychange', () => {{
+                    if (parentDoc.visibilityState === 'hidden') {{
+                        lastHiddenAt = Date.now();
+                    }} else if (parentDoc.visibilityState === 'visible') {{
+                        const elapsed = Date.now() - lastHiddenAt;
+                        const modalOpen = parentDoc.querySelector('div[role="dialog"]');
+                        if (elapsed > 45000 && !modalOpen) {{
+                            const buttons = parentDoc.querySelectorAll('button');
+                            for (let b of buttons) {{
+                                if (b.innerText && b.innerText.includes('🔄 Sync')) {{
+                                    b.click();
+                                    break;
+                                }}
+                            }}
+                        }}
+                    }}
+                }});
+            }}
+
             function toIndianWords(num) {{
                 if (isNaN(num) || num <= 0) return "";
                 let n = Math.floor(num);
@@ -544,6 +688,7 @@ def inject_mobile_ux_fixes_js():
             }}
 
             function applyMobileFixes() {{
+                // A. Lock dropdowns so mobile keyboard never pops up
                 const selectInputs = parentDoc.querySelectorAll('div[data-baseweb="select"] input');
                 selectInputs.forEach((inp) => {{
                     if (inp.getAttribute('readonly') !== 'readonly') {{
@@ -553,6 +698,43 @@ def inject_mobile_ux_fixes_js():
                     }}
                 }});
 
+                // B. Tag parent stHorizontalBlock of any .v-stack-trigger so it stacks 100% full-width on mobile
+                const vTriggers = parentDoc.querySelectorAll('.v-stack-trigger');
+                vTriggers.forEach((trig) => {{
+                    const hBlock = trig.closest('div[data-testid="stHorizontalBlock"]');
+                    if (hBlock && !hBlock.classList.contains('das-force-vertical-mobile')) {{
+                        hBlock.classList.add('das-force-vertical-mobile');
+                    }}
+                }});
+
+                // C. Apply Standard UI/UX Semantic Colors to Action Buttons (Modify, Delete, Copy, Scheduled)
+                const allButtons = parentDoc.querySelectorAll('.stButton > button');
+                allButtons.forEach((btn) => {{
+                    const txt = (btn.innerText || "").trim();
+                    if (txt.includes("✏️ Modify")) {{
+                        // Amber / Warning for Modify / Edit
+                        btn.style.backgroundColor = "rgba(245, 158, 11, 0.16)";
+                        btn.style.borderColor = "#F59E0B";
+                        btn.style.color = "#FBBF24";
+                    }} else if (txt.includes("🗑️ Delete") || txt.includes("🗑️ Move to Bin") || txt.includes("🔥 Delete Forever")) {{
+                        // Crimson / Danger Red for Delete
+                        btn.style.backgroundColor = "rgba(239, 68, 68, 0.16)";
+                        btn.style.borderColor = "#EF4444";
+                        btn.style.color = "#F87171";
+                    }} else if (txt.includes("🔄 Copy Month")) {{
+                        // Sky Teal / Info Blue for Copy / Clone
+                        btn.style.backgroundColor = "rgba(14, 165, 233, 0.16)";
+                        btn.style.borderColor = "#0EA5E9";
+                        btn.style.color = "#38BDF8";
+                    }} else if (txt.includes("⏰ Scheduled Bills") || txt.includes("⏰ Upcoming")) {{
+                        // Indigo / Purple for Scheduled / Reminders
+                        btn.style.backgroundColor = "rgba(99, 102, 241, 0.16)";
+                        btn.style.borderColor = "#6366F1";
+                        btn.style.color = "#818CF8";
+                    }}
+                }});
+
+                // D. Live Indian words underneath number inputs
                 const numInputs = parentDoc.querySelectorAll('div[data-testid="stNumberInput"] input');
                 numInputs.forEach((input) => {{
                     if (input.dataset.indianWordsAttached === "true") return;
@@ -583,6 +765,7 @@ def inject_mobile_ux_fixes_js():
                     updateText();
                 }});
 
+                // E. Double-tap / double-click chart to open Fullscreen Enlarge Modal
                 const charts = parentDoc.querySelectorAll('div[data-testid="stPlotlyChart"]');
                 charts.forEach((chartDiv) => {{
                     if (chartDiv.dataset.dblTapAttached === "true") return;
@@ -692,6 +875,28 @@ def get_connection():
             conn = get_pg_connection()
         return conn
     return sqlite3.connect(LOCAL_DB_NAME, check_same_thread=False)
+
+def get_db_fingerprint():
+    """
+    Ultra-fast O(1) query that returns a lightweight state signature of the database.
+    Used by the background auto-refresh monitor so the app NEVER reloads unless data actually changed!
+    """
+    try:
+        conn = get_connection()
+        c = conn.cursor()
+        c.execute(
+            "SELECT COUNT(*), COALESCE(MAX(id), 0), COALESCE(SUM(amount), 0), COALESCE(SUM(pending_loan), 0) "
+            "FROM transactions WHERE deleted_at IS NULL OR deleted_at = ''"
+        )
+        r1 = c.fetchone()
+        c.execute("SELECT COUNT(*), COALESCE(SUM(expected_amount), 0) FROM recurring_bills WHERE is_active = 1")
+        r2 = c.fetchone()
+        c.close()
+        if not USE_POSTGRES:
+            conn.close()
+        return f"{r1[0]}_{r1[1]}_{float(r1[2]):.2f}_{float(r1[3]):.2f}_{r2[0]}_{float(r2[1]):.2f}"
+    except Exception:
+        return None
 
 def purge_expired_recycle_bin(conn=None):
     close_after = False
@@ -968,7 +1173,7 @@ def load_recurring_bills():
     return r_df
 
 def compute_upcoming_status(recurring_df, trans_df, target_month_key):
-    if recurring_df.empty:
+    if recurring_df is None or recurring_df.empty or "is_active" not in recurring_df.columns:
         return pd.DataFrame()
 
     active_bills = recurring_df[recurring_df["is_active"] == 1].copy()
@@ -1080,6 +1285,8 @@ def clear_all_caches():
     load_data.clear()
     load_recycle_bin.clear()
     load_recurring_bills.clear()
+    st.session_state["last_sync_time"] = datetime.now().strftime("%I:%M:%S %p")
+    st.session_state["db_fingerprint"] = get_db_fingerprint()
 
 def add_transaction(t_date, bank, t_type, category, sub_category, member, amount, pending_loan, details):
     conn = get_connection()
@@ -1248,13 +1455,50 @@ def permanent_delete_transactions(t_ids):
         conn.close()
     clear_all_caches()
 
+# Initialize session state sync tracking
+if "last_sync_time" not in st.session_state:
+    st.session_state["last_sync_time"] = datetime.now().strftime("%I:%M:%S %p")
+if "db_fingerprint" not in st.session_state:
+    st.session_state["db_fingerprint"] = get_db_fingerprint()
+if "auto_sync_enabled" not in st.session_state:
+    st.session_state["auto_sync_enabled"] = True
+
 df = load_data()
 bin_df = load_recycle_bin()
 recurring_df = load_recurring_bills()
 
+
+# ==========================================
+# 5B. ZERO-LAG BACKGROUND AUTO-REFRESH MONITOR
+# ==========================================
+if hasattr(st, "fragment"):
+    @st.fragment(run_every=timedelta(seconds=AUTO_REFRESH_INTERVAL_SECONDS))
+    def background_auto_sync_monitor():
+        """
+        Runs silently in the background every 60 seconds without reloading the page.
+        Only triggers a full app rerun if the database fingerprint actually changed!
+        """
+        if not st.session_state.get("auto_sync_enabled", True):
+            return
+        new_fp = get_db_fingerprint()
+        old_fp = st.session_state.get("db_fingerprint")
+        if new_fp and old_fp and new_fp != old_fp:
+            clear_all_caches()
+            st.rerun(scope="app")
+else:
+    def background_auto_sync_monitor():
+        pass
+
+
 # ==========================================
 # 6. POPUP MODAL DIALOGS (@st.dialog)
 # ==========================================
+def _toggle_upcoming_top_mode(target_mode):
+    st.session_state["up_top_mode"] = (
+        None if st.session_state.get("up_top_mode") == target_mode else target_mode
+    )
+
+
 @st.dialog("⏰ Upcoming & Scheduled Transactions", width="large")
 def open_upcoming_bills_modal(default_month_key=None):
     st.caption(
@@ -1266,15 +1510,22 @@ def open_upcoming_bills_modal(default_month_key=None):
 
     top_b1, top_b2 = st.columns(2)
     with top_b1:
-        if st.button("➕ Add Scheduled Bill Template", use_container_width=True, key="btn_toggle_sched_form"):
-            st.session_state["up_top_mode"] = (
-                None if st.session_state["up_top_mode"] == "schedule" else "schedule"
-            )
+        st.button(
+            "➕ Add Scheduled Bill Template",
+            use_container_width=True,
+            key="btn_toggle_sched_form",
+            on_click=_toggle_upcoming_top_mode,
+            args=("schedule",)
+        )
     with top_b2:
-        if st.button("✍️ Fill Manual Expense Details", type="primary", use_container_width=True, key="btn_toggle_manual_form"):
-            st.session_state["up_top_mode"] = (
-                None if st.session_state["up_top_mode"] == "manual" else "manual"
-            )
+        st.button(
+            "✍️ Fill Manual Expense Details",
+            type="primary",
+            use_container_width=True,
+            key="btn_toggle_manual_form",
+            on_click=_toggle_upcoming_top_mode,
+            args=("manual",)
+        )
 
     # FORM A: FILL MANUAL EXPENSE DETAILS DIRECTLY
     if st.session_state["up_top_mode"] == "manual":
@@ -1331,9 +1582,13 @@ def open_upcoming_bills_modal(default_month_key=None):
                         st.toast(f"✅ Saved {final_m_sub}: {format_inr(clean_m_amt, 2)}", icon="💰")
                         st.rerun()
             with s_col2:
-                if st.button("✖️ Close", use_container_width=True, key="man_up_close_btn"):
-                    st.session_state["up_top_mode"] = None
-                    st.rerun()
+                st.button(
+                    "✖️ Close",
+                    use_container_width=True,
+                    key="man_up_close_btn",
+                    on_click=_toggle_upcoming_top_mode,
+                    args=("manual",)
+                )
 
     # FORM B: ADD NEW SCHEDULED BILL TEMPLATE
     elif st.session_state["up_top_mode"] == "schedule":
@@ -1387,9 +1642,13 @@ def open_upcoming_bills_modal(default_month_key=None):
                         st.toast(f"✅ Added '{final_ns_sub}' to Scheduled Bills!", icon="⏰")
                         st.rerun()
             with sb_col2:
-                if st.button("✖️ Close", use_container_width=True, key="sched_up_close_btn"):
-                    st.session_state["up_top_mode"] = None
-                    st.rerun()
+                st.button(
+                    "✖️ Close",
+                    use_container_width=True,
+                    key="sched_up_close_btn",
+                    on_click=_toggle_upcoming_top_mode,
+                    args=("schedule",)
+                )
 
     up_tab1, up_tab2 = st.tabs(["🔔 Due / Upcoming This Month", "⚙️ Edit All Scheduled Templates"])
 
@@ -1429,7 +1688,6 @@ def open_upcoming_bills_modal(default_month_key=None):
                 for _, bill_row in unpaid_df.iterrows():
                     b_id = int(bill_row["bill_id"])
                     with st.container(border=True):
-                        # TIER 1: Full-Width Symmetric Header (Title on Left, Status Pill on Right)
                         st.markdown(
                             f'<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:2px;">'
                             f'<span style="font-size:1.02rem; font-weight:700;">{html_lib.escape(str(bill_row["Sub-category"]))}</span>'
@@ -1443,7 +1701,6 @@ def open_upcoming_bills_modal(default_month_key=None):
                             unsafe_allow_html=True
                         )
 
-                        # TIER 2: Symmetric 2-Column Input Row (Amount 50% | Bank 50%)
                         in_c1, in_c2 = st.columns(2)
                         with in_c1:
                             actual_amt = st.number_input(
@@ -1463,7 +1720,6 @@ def open_upcoming_bills_modal(default_month_key=None):
                                 key=f"quick_bnk_{sel_m_key}_{b_id}"
                             )
 
-                        # TIER 3: Full-Width Note / Details Input
                         manual_note = st.text_input(
                             "Note / Details",
                             value=str(bill_row["Details"]),
@@ -1472,7 +1728,6 @@ def open_upcoming_bills_modal(default_month_key=None):
                             label_visibility="collapsed"
                         )
 
-                        # TIER 4: Full-Width Primary Action Button (100% Symmetric Width)
                         if st.button(
                             f"➕ Add {bill_row['Sub-category']} ({format_inr(actual_amt or 0)}) to Expenses",
                             key=f"quick_btn_{sel_m_key}_{b_id}",
@@ -1565,7 +1820,23 @@ def open_upcoming_bills_modal(default_month_key=None):
                     paid_disp = paid_df[["Sub-category", "Category", "Bank", "Member", "Paid_Amount", "Status"]].copy()
                     paid_disp["Paid_Amount"] = paid_disp["Paid_Amount"].apply(format_inr)
                     paid_disp.columns = ["Sub-category", "Category", "Bank", "Member", "Paid Amount", "Status"]
-                    st.dataframe(paid_disp, use_container_width=True, hide_index=True)
+
+                    paid_cards = []
+                    for _, pr in paid_df.iterrows():
+                        paid_cards.append(
+                            f'<div class="hist-card">'
+                            f'<div class="hist-card-top">'
+                            f'<div class="hist-subcat">{html_lib.escape(str(pr["Sub-category"]))}</div>'
+                            f'<div class="hist-amt" style="color:#2ecc71;">✅ {format_inr(pr["Paid_Amount"])}</div>'
+                            f'</div>'
+                            f'<div class="hist-badges">'
+                            f'<span class="hist-pill">🏦 {html_lib.escape(str(pr["Bank"]))}</span>'
+                            f'<span class="hist-pill">👨‍👩‍👦 {html_lib.escape(str(pr["Member"]))}</span>'
+                            f'<span class="hist-pill">📂 {html_lib.escape(str(pr["Category"]))}</span>'
+                            f'</div>'
+                            f'</div>'
+                        )
+                    render_responsive_table_or_cards(paid_disp, paid_cards)
 
     with up_tab2:
         st.caption(
@@ -1638,8 +1909,26 @@ def open_chart_popup_modal(fig_json_str, chart_title, summary_df=None):
     st.plotly_chart(popup_fig, use_container_width=True, config=PLOTLY_POPUP_CONFIG)
 
     if summary_df is not None and not summary_df.empty:
-        with st.expander("📋 View Exact Numbers Table", expanded=True):
-            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+        with st.expander("📋 View Exact Numbers", expanded=True):
+            popup_cards = []
+            cols_list = list(summary_df.columns)
+            for _, sr in summary_df.iterrows():
+                title_txt = html_lib.escape(str(sr[cols_list[0]]))
+                val_txt = html_lib.escape(str(sr[cols_list[-1]]))
+                mid_pill = (
+                    f'<div class="hist-badges"><span class="hist-pill">📂 {html_lib.escape(str(sr[cols_list[1]]))}</span></div>'
+                    if len(cols_list) > 2 else ""
+                )
+                popup_cards.append(
+                    f'<div class="hist-card">'
+                    f'<div class="hist-card-top">'
+                    f'<div class="hist-subcat">{title_txt}</div>'
+                    f'<div class="hist-amt" style="color:#2ecc71;">{val_txt}</div>'
+                    f'</div>'
+                    f'{mid_pill}'
+                    f'</div>'
+                )
+            render_responsive_table_or_cards(summary_df, popup_cards)
 
 
 def render_chart_with_popup(title, fig, key_suffix, summary_df=None, show_inline_legend=False):
@@ -2236,7 +2525,29 @@ def open_recycle_bin_modal():
     disp_bin["amount"] = disp_bin["amount"].apply(format_inr)
     disp_bin["pending_loan"] = disp_bin["pending_loan"].apply(format_inr)
     disp_bin.columns = ["ID", "Date", "Bank", "Sub-category", "Member", "Amount", "Pending Loan", "Expires In"]
-    st.dataframe(disp_bin, use_container_width=True, hide_index=True)
+
+    bin_cards = []
+    for _, br in current_bin.iterrows():
+        b_loan_pill = (
+            f'<span class="hist-pill" style="color:#f39c12;">🏦 Loan: {format_inr(br["pending_loan"])}</span>'
+            if float(br["pending_loan"]) > 0 else ""
+        )
+        bin_cards.append(
+            f'<div class="hist-card">'
+            f'<div class="hist-card-top">'
+            f'<div class="hist-subcat">#{int(br["id"])} • {html_lib.escape(str(br["sub_category"]))}</div>'
+            f'<div class="hist-amt" style="color:#ff6b6b;">{format_inr(br["amount"])}</div>'
+            f'</div>'
+            f'<div class="hist-badges">'
+            f'<span class="hist-pill">📅 {br["t_date"].strftime("%d %b %Y")}</span>'
+            f'<span class="hist-pill">🏦 {html_lib.escape(str(br["bank"]))}</span>'
+            f'<span class="hist-pill">👨‍👩‍👦 {html_lib.escape(str(br["member"]))}</span>'
+            f'<span class="hist-pill">⏳ {html_lib.escape(str(br["Auto_Clears_In"]))}</span>'
+            f'{b_loan_pill}'
+            f'</div>'
+            f'</div>'
+        )
+    render_responsive_table_or_cards(disp_bin, bin_cards)
 
 
 @st.dialog("🔄 Copy / Auto-Fetch Last Month's Data", width="large")
@@ -2256,6 +2567,7 @@ def open_copy_modal():
     with cl_col2:
         target_date = st.date_input("2️⃣ New Month Date", date.today())
 
+    # Uses on_click callback so switching options NEVER refreshes the whole page or closes this popup!
     clone_filter = button_selector(
         "3️⃣ What to Fetch?",
         ["Only Expenses & Loans", "Only Pending Loans", "Both Expenses & Income"],
@@ -2301,7 +2613,8 @@ def open_copy_modal():
             "Amount (₹)": st.column_config.NumberColumn("Amount (₹)", min_value=0.0, format="%.2f"),
             "Pending Loan (₹)": st.column_config.NumberColumn("Pending Loan (₹)", min_value=0.0, format="%.2f"),
             "Details": st.column_config.TextColumn("Details")
-        }
+        },
+        key=f"copy_editor_{source_month}_{clone_filter}"
     )
 
     selected_rows = edited_clone_df[edited_clone_df["Copy"] == True]
@@ -2476,12 +2789,22 @@ def open_delete_modal(target_df, scope_label="Selected Month"):
             st.warning("⚠️ Please select at least one entry above.")
 
 # ==========================================
-# 7. TOP HEADER WITH APP ICON & ACTION BAR
+# 7. TOP HEADER WITH 1-TAP SYNC & ACTION BAR
 # ==========================================
-st.markdown(
-    f'<div class="app-top-title"><img src="{APP_ICON_URI}" class="app-logo-img"/> Das Family Expense & Loan Tracker</div>',
-    unsafe_allow_html=True
-)
+hdr_left, hdr_right = st.columns([3.2, 0.8])
+with hdr_left:
+    st.markdown(
+        f'<div class="app-top-title"><img src="{APP_ICON_URI}" class="app-logo-img"/> Das Family Expense & Loan Tracker</div>',
+        unsafe_allow_html=True
+    )
+with hdr_right:
+    if st.button("🔄 Sync", key="top_manual_sync_btn", use_container_width=True, help=f"Last synced: {st.session_state['last_sync_time']}"):
+        clear_all_caches()
+        st.toast(f"⚡ Synced latest data ({st.session_state['last_sync_time']})!", icon="🔄")
+        st.rerun()
+
+# Run the zero-lag background database fingerprint monitor
+background_auto_sync_monitor()
 
 bin_count = len(bin_df)
 bin_btn_label = f"🗑️ Bin ({bin_count})" if bin_count > 0 else "🗑️ Bin"
@@ -2543,8 +2866,10 @@ else:
     with tab_monthly:
         month_options = df.sort_values("Month_Key", ascending=False)["Month_Label"].unique()
 
+        # Inside col_select, .v-stack-trigger tells JS/CSS to stack this row 100% full-width on mobile
         col_select, col_chart_style = st.columns(2)
         with col_select:
+            st.markdown('<span class="v-stack-trigger"></span>', unsafe_allow_html=True)
             selected_month = st.selectbox("🗓️ Select Budget Month", month_options)
         with col_chart_style:
             chart_style = button_selector(
@@ -2614,8 +2939,10 @@ else:
         r1_c2.metric("Monthly Expense", format_inr(m_expense))
 
         r2_c1, r2_c2 = st.columns(2)
-        r2_c1.metric("Net Savings", format_inr(m_balance), delta=format_inr(m_balance))
-        r2_c2.metric("Pending Loan", format_inr(m_pending_loan))
+        with r2_c1:
+            render_net_savings_metric("Net Savings", m_balance)
+        with r2_c2:
+            st.metric("Pending Loan", format_inr(m_pending_loan))
 
         if not shifted_sal_df.empty:
             sal_dates = ", ".join(shifted_sal_df["t_date"].dt.strftime("%d %b").unique())
@@ -2627,17 +2954,20 @@ else:
         if m_self_transfer > 0:
             st.caption(f"🔄 **Self-Transfers Excluded from Totals:** {format_inr(m_self_transfer)}")
 
-        m_act1, m_act2, m_act3, m_act4 = st.columns(4)
-        with m_act1:
+        # 2x2 ACTION BUTTON GRID (2 Buttons at Top, 2 Buttons at Bottom) with UI/UX Colors
+        act_row1_c1, act_row1_c2 = st.columns(2)
+        with act_row1_c1:
             if st.button("⏰ Scheduled Bills", use_container_width=True, key="btn_up_m"):
                 open_upcoming_bills_modal(selected_month_key)
-        with m_act2:
+        with act_row1_c2:
             if st.button("🔄 Copy Month", use_container_width=True, key="btn_copy_m"):
                 open_copy_modal()
-        with m_act3:
+
+        act_row2_c1, act_row2_c2 = st.columns(2)
+        with act_row2_c1:
             if st.button("✏️ Modify Entry", use_container_width=True, key="btn_mod_m"):
                 open_modify_modal(m_df)
-        with m_act4:
+        with act_row2_c2:
             if st.button("🗑️ Delete Entry", use_container_width=True, key="btn_del_m"):
                 open_delete_modal(m_df, scope_label=selected_month)
 
@@ -2649,8 +2979,10 @@ else:
 
         hole_size = 0.45 if chart_style == "Donut" else 0.0
 
+        # Charts automatically stack 1-per-row vertically on mobile & stay 2-col on laptop
         ch1, ch2 = st.columns(2)
         with ch1:
+            st.markdown('<span class="v-stack-trigger"></span>', unsafe_allow_html=True)
             if not exp_m_df.empty and exp_m_df["amount"].sum() > 0:
                 cat_grp = exp_m_df.groupby("category", as_index=False)["amount"].sum().sort_values("amount", ascending=True)
                 cat_grp["INR_Label"] = cat_grp["amount"].apply(format_inr)
@@ -2706,6 +3038,7 @@ else:
 
         ch3, ch4 = st.columns(2)
         with ch3:
+            st.markdown('<span class="v-stack-trigger"></span>', unsafe_allow_html=True)
             if not inc_m_df.empty and inc_m_df["amount"].sum() > 0:
                 mem_inc_summary = inc_m_df.groupby("member", as_index=False)["amount"].sum()
                 mem_inc_summary["INR_Label"] = mem_inc_summary["amount"].apply(format_inr)
@@ -2759,35 +3092,82 @@ else:
             else:
                 st.info("No bank expenses.")
 
+        # Forces "Sub-Category Summary" on TOP and "Bank & Member Summary" on BOTTOM on mobile!
         t_col1, t_col2 = st.columns(2)
         with t_col1:
+            st.markdown('<span class="v-stack-trigger"></span>', unsafe_allow_html=True)
             st.markdown("**📂 Sub-Category Summary**")
             if not exp_m_df.empty:
-                sub_table = exp_m_df.groupby(["sub_category", "category"], as_index=False).agg(
+                sub_raw = exp_m_df.groupby(["sub_category", "category"], as_index=False).agg(
                     Paid=("amount", "sum"), Loan=("pending_loan", "sum")
                 ).sort_values("Paid", ascending=False)
+
+                sub_table = sub_raw.copy()
                 sub_table["Paid"] = sub_table["Paid"].apply(format_inr)
                 sub_table["Loan"] = sub_table["Loan"].apply(format_inr)
                 sub_table.columns = ["Sub-category", "Category", "Paid", "Pending Loan"]
-                st.dataframe(sub_table, use_container_width=True, hide_index=True)
+
+                sub_cards = []
+                for _, sr in sub_raw.iterrows():
+                    loan_badge = (
+                        f'<span class="hist-pill" style="color:#f39c12;">🏦 Loan: {format_inr(sr["Loan"])}</span>'
+                        if float(sr["Loan"]) > 0 else ""
+                    )
+                    sub_cards.append(
+                        f'<div class="hist-card">'
+                        f'<div class="hist-card-top">'
+                        f'<div class="hist-subcat">{html_lib.escape(str(sr["sub_category"]))}</div>'
+                        f'<div class="hist-amt" style="color:#ff6b6b;">{format_inr(sr["Paid"])}</div>'
+                        f'</div>'
+                        f'<div class="hist-badges">'
+                        f'<span class="hist-pill">📂 {html_lib.escape(str(sr["category"]))}</span>'
+                        f'{loan_badge}'
+                        f'</div>'
+                        f'</div>'
+                    )
+                render_responsive_table_or_cards(sub_table, sub_cards)
 
         with t_col2:
             st.markdown("**💳 Bank & Member Summary**")
             if not exp_m_df.empty:
-                mem_exp_table = exp_m_df.groupby(["bank", "member"], as_index=False).agg(
+                mem_raw = exp_m_df.groupby(["bank", "member"], as_index=False).agg(
                     Entries=("id", "count"), Total_Paid=("amount", "sum"), Total_Pending_Loan=("pending_loan", "sum")
                 ).sort_values("Total_Paid", ascending=False)
+
+                mem_exp_table = mem_raw.copy()
                 mem_exp_table["Total_Paid"] = mem_exp_table["Total_Paid"].apply(format_inr)
                 mem_exp_table["Total_Pending_Loan"] = mem_exp_table["Total_Pending_Loan"].apply(format_inr)
                 mem_exp_table.columns = ["Bank", "Member", "Items", "Paid", "Pending Loan"]
-                st.dataframe(mem_exp_table, use_container_width=True, hide_index=True)
+
+                mem_cards = []
+                for _, mr in mem_raw.iterrows():
+                    m_loan_badge = (
+                        f'<span class="hist-pill" style="color:#f39c12;">🏦 Loan: {format_inr(mr["Total_Pending_Loan"])}</span>'
+                        if float(mr["Total_Pending_Loan"]) > 0 else ""
+                    )
+                    mem_cards.append(
+                        f'<div class="hist-card">'
+                        f'<div class="hist-card-top">'
+                        f'<div class="hist-subcat">👨‍👩‍👦 {html_lib.escape(str(mr["member"]))}</div>'
+                        f'<div class="hist-amt" style="color:#ff6b6b;">{format_inr(mr["Total_Paid"])}</div>'
+                        f'</div>'
+                        f'<div class="hist-badges">'
+                        f'<span class="hist-pill">🏦 {html_lib.escape(str(mr["bank"]))}</span>'
+                        f'<span class="hist-pill">🧾 {int(mr["Entries"])} items</span>'
+                        f'{m_loan_badge}'
+                        f'</div>'
+                        f'</div>'
+                    )
+                render_responsive_table_or_cards(mem_exp_table, mem_cards)
 
     # ------------------------------------------
     # TAB 2: DEDICATED PENDING LOAN TRACKER & CHARTS
     # ------------------------------------------
     with tab_loans:
+        # Inside l_top1, .v-stack-trigger stacks "Manage Loans" on TOP and "Loan Chart Style" on BOTTOM on mobile!
         l_top1, l_top2 = st.columns(2)
         with l_top1:
+            st.markdown('<span class="v-stack-trigger"></span>', unsafe_allow_html=True)
             st.markdown('<div style="font-size:0.86rem; font-weight:600; margin-bottom:4px;">🏦 Manage Loans</div>', unsafe_allow_html=True)
             if st.button("🏦 Add / Update Month-Wise Loans", type="primary", use_container_width=True, key="btn_open_loan_tab"):
                 open_pending_loan_modal()
@@ -2838,6 +3218,7 @@ else:
 
             l_ch1, l_ch2 = st.columns(2)
             with l_ch1:
+                st.markdown('<span class="v-stack-trigger"></span>', unsafe_allow_html=True)
                 l_cat_grp = chart_source_df.groupby("Loan_Category", as_index=False)[val_col].sum().sort_values(val_col, ascending=True)
                 l_cat_grp["INR_Label"] = l_cat_grp[val_col].apply(format_inr)
                 lcat_tbl = l_cat_grp.sort_values(val_col, ascending=False)[["Loan_Category", "INR_Label"]].rename(
@@ -2887,6 +3268,7 @@ else:
 
             l_ch3, l_ch4 = st.columns(2)
             with l_ch3:
+                st.markdown('<span class="v-stack-trigger"></span>', unsafe_allow_html=True)
                 l_mem_grp = chart_source_df.groupby("member", as_index=False)[val_col].sum()
                 l_mem_grp["INR_Label"] = l_mem_grp[val_col].apply(format_inr)
                 lmem_tbl = l_mem_grp.sort_values(val_col, ascending=False)[["member", "INR_Label"]].rename(
@@ -2928,12 +3310,39 @@ else:
                 fig_loan_trend.update_traces(hovertemplate="<b>%{x}</b>: %{text}<extra></extra>")
                 render_chart_with_popup("📉 Month-Wise Loan Trend", fig_loan_trend, "l_trend", ltrend_tbl)
 
-            st.markdown("**📋 Itemized Loans & EMIs Table**")
+            st.markdown("**📋 Itemized Loans & EMIs**")
             loan_list_disp = cur_loan_df[["Loan_Category", "sub_category", "bank", "member", "amount", "pending_loan", "details"]].copy()
             loan_list_disp["amount"] = loan_list_disp["amount"].apply(lambda x: format_inr(x, 2))
             loan_list_disp["pending_loan"] = loan_list_disp["pending_loan"].apply(lambda x: format_inr(x, 2))
             loan_list_disp.columns = ["Loan Category", "Loan Sub-category", "Bank", "Member", "EMI Paid", "Pending Balance", "Details"]
-            st.dataframe(loan_list_disp, use_container_width=True, hide_index=True)
+
+            loan_cards = []
+            for _, lr in cur_loan_df.iterrows():
+                emi_v = float(lr["amount"])
+                pend_v = float(lr["pending_loan"])
+                right_str = f"Pending: {format_inr(pend_v)}" if pend_v > 0 else f"EMI: {format_inr(emi_v)}"
+                emi_pill = (
+                    f'<span class="hist-pill" style="color:#2ecc71;">💸 EMI Paid: {format_inr(emi_v)}</span>'
+                    if emi_v > 0 and pend_v > 0 else ""
+                )
+                det_l_esc = html_lib.escape(str(lr["details"] or ""))
+                det_l_html = f'<div class="hist-details">📝 {det_l_esc}</div>' if det_l_esc else ""
+                loan_cards.append(
+                    f'<div class="hist-card">'
+                    f'<div class="hist-card-top">'
+                    f'<div class="hist-subcat">#{int(lr["id"])} • {html_lib.escape(str(lr["sub_category"]))}</div>'
+                    f'<div class="hist-amt" style="color:#f39c12;">{right_str}</div>'
+                    f'</div>'
+                    f'<div class="hist-badges">'
+                    f'<span class="hist-pill">📂 {html_lib.escape(str(lr["Loan_Category"]))}</span>'
+                    f'<span class="hist-pill">🏦 {html_lib.escape(str(lr["bank"]))}</span>'
+                    f'<span class="hist-pill">👨‍👩‍👦 {html_lib.escape(str(lr["member"]))}</span>'
+                    f'{emi_pill}'
+                    f'</div>'
+                    f'{det_l_html}'
+                    f'</div>'
+                )
+            render_responsive_table_or_cards(loan_list_disp, loan_cards)
 
     # ------------------------------------------
     # TAB 3: ALL-TIME & MULTI-MONTH TRENDS
@@ -2951,8 +3360,10 @@ else:
         a2.metric("All-Time Expense", format_inr(all_exp))
 
         a3, a4 = st.columns(2)
-        a3.metric("All-Time Net Savings", format_inr(all_bal))
-        a4.metric(f"Pending Loan ({latest_month_key})", format_inr(latest_pending_loan))
+        with a3:
+            render_net_savings_metric("All-Time Net Savings", all_bal)
+        with a4:
+            st.metric(f"Pending Loan ({latest_month_key})", format_inr(latest_pending_loan))
 
         st.divider()
         st.caption("💡 **Tip:** Double-tap any trend chart (or tap **🔍 Enlarge**) to pop it open in Fullscreen!")
@@ -2990,17 +3401,20 @@ else:
     # TAB 4: COMPLETE HISTORY WITH RICH MULTI-FILTERS & MOBILE CARDS
     # ------------------------------------------
     with tab_records:
-        h_btn1, h_btn2, h_btn3, h_btn4 = st.columns(4)
-        with h_btn1:
+        # 2x2 Action Grid in History Tab as well
+        h_r1_c1, h_r1_c2 = st.columns(2)
+        with h_r1_c1:
             if st.button("📥 Import CSV", use_container_width=True, key="btn_imp_all"):
                 open_excel_import_modal()
-        with h_btn2:
+        with h_r1_c2:
             if st.button("✏️ Modify Entry", use_container_width=True, key="btn_mod_all"):
                 open_modify_modal(df)
-        with h_btn3:
+
+        h_r2_c1, h_r2_c2 = st.columns(2)
+        with h_r2_c1:
             if st.button("🗑️ Move to Bin", use_container_width=True, key="btn_del_all"):
                 open_delete_modal(df, scope_label="All Months")
-        with h_btn4:
+        with h_r2_c2:
             if st.button(bin_btn_label, use_container_width=True, key="btn_bin_all"):
                 open_recycle_bin_modal()
 
@@ -3113,17 +3527,13 @@ else:
             use_container_width=True
         )
 
-        # 1. DESKTOP VIEW: Normal Full-Width Table (Automatically hidden on screens <= 768px)
-        st.markdown('<div class="desktop-history-marker"></div>', unsafe_allow_html=True)
-        st.dataframe(disp_df, use_container_width=True, hide_index=True)
-
-        # 2. MOBILE VIEW: Clean Card Feed (Automatically hidden on Laptop > 768px)
+        # Build Mobile Cards for History (Desktop gets disp_df table automatically)
         MAX_MOBILE_CARDS = 100
         mobile_slice = hist_df.head(MAX_MOBILE_CARDS)
-        cards_html = ['<div class="mobile-history-feed">']
+        hist_cards = []
 
         if len(hist_df) > MAX_MOBILE_CARDS:
-            cards_html.append(
+            hist_cards.append(
                 f'<div style="font-size:0.75rem; color:#9ca3af; margin-bottom:8px; text-align:center;">'
                 f'📱 Showing latest {MAX_MOBILE_CARDS} of {len(hist_df)} filtered records (Use filters above to narrow down)'
                 f'</div>'
@@ -3179,13 +3589,20 @@ else:
                 f'{det_html}'
                 f'</div>'
             )
-            cards_html.append(card_item)
+            hist_cards.append(card_item)
 
-        cards_html.append("</div>")
-        st.markdown("".join(cards_html), unsafe_allow_html=True)
+        render_responsive_table_or_cards(disp_df, hist_cards)
 
-# Footer status badge
-st.caption(
-    f"📱 Mobile App Ready | ⏰ Scheduled Bills Active | 📅 Salary Auto-Shift (Day ≥ {SALARY_CUTOFF_DAY}) | "
-    + ("🟢 Cloud PostgreSQL" if USE_POSTGRES else "🟡 Local SQLite (`expenses.db`)")
-)
+# Footer status bar with Auto-Sync toggle & Last Synced timestamp
+f_col1, f_col2 = st.columns([3, 1])
+with f_col1:
+    st.caption(
+        f"📱 Mobile App Ready | 🔄 Last Synced: **{st.session_state['last_sync_time']}** | "
+        + ("🟢 Cloud PostgreSQL" if USE_POSTGRES else "🟡 Local SQLite (`expenses.db`)")
+    )
+with f_col2:
+    st.session_state["auto_sync_enabled"] = st.checkbox(
+        "⚡ Auto-Sync (60s)",
+        value=st.session_state.get("auto_sync_enabled", True),
+        help="Silently checks for new database changes every 60s and only refreshes if data actually changed."
+    )
