@@ -53,8 +53,41 @@ def get_app_icon_data_uri():
 
 APP_ICON_URI = get_app_icon_data_uri()
 
+
+def button_selector(label, options, key, default=None):
+    """
+    Replaces st.radio with a row of normal st.button elements.
+    The active option is highlighted with type='primary' (solid red) and others use type='secondary'.
+    """
+    state_key = f"btn_sel_val_{key}"
+    if state_key not in st.session_state or st.session_state[state_key] not in options:
+        st.session_state[state_key] = default if default in options else options[0]
+
+    if label:
+        st.markdown(
+            f'<div style="font-size:0.86rem; font-weight:600; margin-bottom:4px;">{label}</div>',
+            unsafe_allow_html=True
+        )
+
+    cols = st.columns(len(options))
+    for idx, opt in enumerate(options):
+        is_selected = (st.session_state[state_key] == opt)
+        with cols[idx]:
+            if st.button(
+                opt,
+                key=f"{key}_opt_{idx}",
+                type="primary" if is_selected else "secondary",
+                use_container_width=True
+            ):
+                if st.session_state[state_key] != opt:
+                    st.session_state[state_key] = opt
+                    st.rerun()
+
+    return st.session_state[state_key]
+
+
 # Responsive CSS:
-# - Desktop / Laptop (> 768px): Spacious layout, button-styled tabs & radio pills, full DataFrame history table
+# - Desktop / Laptop (> 768px): Spacious layout, button-styled tabs, full DataFrame history table
 # - Mobile Phone (<= 768px): Standalone App look, 2-col KPIs, compact buttons, and Card Feed for History
 st.markdown("""
 <style>
@@ -132,46 +165,7 @@ st.markdown("""
         color: #FFFFFF !important;
     }
 
-    /* 2. STYLE HORIZONTAL RADIO ("Donut", "Solid Pie", "Bar") AS SEGMENTED BUTTONS */
-    div[role="radiogroup"] {
-        display: flex !important;
-        flex-direction: row !important;
-        gap: 6px !important;
-        background-color: rgba(128, 128, 128, 0.08) !important;
-        padding: 4px !important;
-        border-radius: 10px !important;
-        border: 1px solid rgba(128, 128, 128, 0.2) !important;
-        width: fit-content !important;
-    }
-    div[role="radiogroup"] label > div:first-child {
-        display: none !important;
-    }
-    div[role="radiogroup"] label {
-        flex: 1 1 auto !important;
-        justify-content: center !important;
-        background-color: transparent !important;
-        border: 1px solid transparent !important;
-        border-radius: 7px !important;
-        padding: 6px 14px !important;
-        margin: 0 !important;
-        cursor: pointer !important;
-        transition: all 0.15s ease !important;
-    }
-    div[role="radiogroup"] label p {
-        font-size: 0.85rem !important;
-        font-weight: 600 !important;
-        margin: 0 !important;
-    }
-    div[role="radiogroup"] label:has(input:checked) {
-        background-color: #FF4B4B !important;
-        border-color: #FF4B4B !important;
-        box-shadow: 0 2px 6px rgba(255, 75, 75, 0.35) !important;
-    }
-    div[role="radiogroup"] label:has(input:checked) p {
-        color: #FFFFFF !important;
-    }
-
-    /* 3. DESKTOP DEFAULT: Show DataFrame Table, Hide Mobile History Cards */
+    /* 2. DESKTOP DEFAULT: Show DataFrame Table, Hide Mobile History Cards */
     div[data-testid="stElementContainer"]:has(.mobile-history-feed),
     .mobile-history-feed {
         display: none !important;
@@ -249,7 +243,7 @@ st.markdown("""
             height: 28px !important;
             border-radius: 6px !important;
         }
-        /* Keep horizontal blocks in a 2-column grid instead of 1-column vertical stack */
+        /* Keep horizontal blocks in a multi-column grid instead of 1-column vertical stack */
         div[data-testid="stHorizontalBlock"] {
             display: flex !important;
             flex-direction: row !important;
@@ -259,9 +253,8 @@ st.markdown("""
         }
         div[data-testid="stHorizontalBlock"] > div[data-testid="column"],
         div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
-            flex: 1 1 calc(50% - 6px) !important;
-            min-width: calc(50% - 6px) !important;
-            max-width: calc(50% - 6px) !important;
+            flex: 1 1 calc(33.33% - 6px) !important;
+            min-width: calc(33.33% - 6px) !important;
         }
         /* Compact App Buttons on Phone */
         .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
@@ -297,12 +290,6 @@ st.markdown("""
             font-size: 0.76rem !important;
             padding: 4px 10px !important;
             border-radius: 8px !important;
-        }
-        div[role="radiogroup"] {
-            width: 100% !important;
-        }
-        div[role="radiogroup"] label {
-            padding: 5px 8px !important;
         }
         h3, .stSubheader {
             font-size: 1.0rem !important;
@@ -1293,15 +1280,16 @@ def open_upcoming_bills_modal(default_month_key=None):
     if st.session_state["up_top_mode"] == "manual":
         with st.container(border=True):
             st.markdown("##### ✍️ Fill Manual Transaction Details")
+            man_type = button_selector("Transaction Type", ["Expense", "Income", "Self Transfer"], key="man_up_type")
             m_c1, m_c2 = st.columns(2)
             with m_c1:
-                man_type = st.radio("Type", ["Expense", "Income", "Self Transfer"], horizontal=True, key="man_up_type")
                 man_cat_map = get_category_map_for_type(man_type)
                 man_cat = st.selectbox("Category", list(man_cat_map.keys()), key="man_up_cat")
             with m_c2:
                 man_bank = st.selectbox("Bank Account", BANK_OPTIONS, key="man_up_bank")
-                man_sub_opts = man_cat_map[man_cat] + ["➕ Custom Sub-category..."]
-                man_sub_sel = st.selectbox("Sub-category", man_sub_opts, key="man_up_sub")
+
+            man_sub_opts = man_cat_map[man_cat] + ["➕ Custom Sub-category..."]
+            man_sub_sel = st.selectbox("Sub-category", man_sub_opts, key="man_up_sub")
 
             man_custom_sub = ""
             if man_sub_sel == "➕ Custom Sub-category...":
@@ -1671,17 +1659,15 @@ def render_chart_with_popup(title, fig, key_suffix, summary_df=None, show_inline
 
 @st.dialog("➕ Add New Expense / Income / Transfer", width="large")
 def open_add_modal():
-    top_col1, top_col2 = st.columns(2)
-    with top_col1:
-        t_type = st.radio("Transaction Type", ["Expense", "Income", "Self Transfer"], horizontal=True)
-    with top_col2:
-        bank = st.selectbox("Bank Account", BANK_OPTIONS)
+    t_type = button_selector("Transaction Type", ["Expense", "Income", "Self Transfer"], key="add_modal_t_type")
 
-    cat_col1, cat_col2 = st.columns(2)
+    cat_col1, cat_col2, cat_col3 = st.columns(3)
     with cat_col1:
+        bank = st.selectbox("Bank Account", BANK_OPTIONS)
+    with cat_col2:
         cat_map = get_category_map_for_type(t_type)
         category = st.selectbox("Category", list(cat_map.keys()))
-    with cat_col2:
+    with cat_col3:
         sub_options = cat_map[category] + ["➕ Custom Sub-category..."]
         selected_sub = st.selectbox("Sub-category", sub_options)
 
@@ -2270,10 +2256,10 @@ def open_copy_modal():
     with cl_col2:
         target_date = st.date_input("2️⃣ New Month Date", date.today())
 
-    clone_filter = st.radio(
+    clone_filter = button_selector(
         "3️⃣ What to Fetch?",
         ["Only Expenses & Loans", "Only Pending Loans", "Both Expenses & Income"],
-        horizontal=True
+        key="copy_modal_filter"
     )
 
     inject_mobile_ux_fixes_js()
@@ -2364,19 +2350,14 @@ def open_modify_modal(target_df):
     rec_id = records_map[selected_label]
     rec_row = target_df[target_df["id"] == rec_id].iloc[0]
 
-    mc1, mc2 = st.columns(2)
-    with mc1:
-        type_opts = ["Expense", "Income", "Self Transfer"]
-        default_type_idx = type_opts.index(rec_row["t_type"]) if rec_row["t_type"] in type_opts else 0
-        edit_type = st.radio(
-            "Transaction Type", type_opts, index=default_type_idx,
-            horizontal=True, key=f"mod_type_{rec_id}"
-        )
-    with mc2:
-        bank_list = list(BANK_OPTIONS)
-        if rec_row["bank"] not in bank_list:
-            bank_list.insert(0, rec_row["bank"])
-        edit_bank = st.selectbox("Bank", bank_list, index=bank_list.index(rec_row["bank"]), key=f"mod_bank_{rec_id}")
+    type_opts = ["Expense", "Income", "Self Transfer"]
+    default_type = rec_row["t_type"] if rec_row["t_type"] in type_opts else "Expense"
+    edit_type = button_selector(
+        "Transaction Type",
+        type_opts,
+        key=f"mod_type_{rec_id}",
+        default=default_type
+    )
 
     cat_map = get_category_map_for_type(edit_type)
     cat_list = list(cat_map.keys()) + [c for c in LOAN_CATEGORY_MAP.keys() if c not in cat_map]
@@ -2384,7 +2365,12 @@ def open_modify_modal(target_df):
         cat_list.insert(0, rec_row["category"])
     default_cat_idx = cat_list.index(rec_row["category"])
 
-    mc3, mc4 = st.columns(2)
+    mc2, mc3, mc4 = st.columns(3)
+    with mc2:
+        bank_list = list(BANK_OPTIONS)
+        if rec_row["bank"] not in bank_list:
+            bank_list.insert(0, rec_row["bank"])
+        edit_bank = st.selectbox("Bank", bank_list, index=bank_list.index(rec_row["bank"]), key=f"mod_bank_{rec_id}")
     with mc3:
         edit_category = st.selectbox(
             "Category", cat_list, index=default_cat_idx, key=f"mod_cat_{rec_id}"
@@ -2561,10 +2547,10 @@ else:
         with col_select:
             selected_month = st.selectbox("🗓️ Select Budget Month", month_options)
         with col_chart_style:
-            chart_style = st.radio(
+            chart_style = button_selector(
                 "📊 Chart Style",
                 ["Donut", "Solid Pie", "Bar"],
-                horizontal=True
+                key="monthly_chart_style"
             )
 
         selected_month_key = df[df["Month_Label"] == selected_month]["Month_Key"].iloc[0]
@@ -2802,14 +2788,14 @@ else:
     with tab_loans:
         l_top1, l_top2 = st.columns(2)
         with l_top1:
+            st.markdown('<div style="font-size:0.86rem; font-weight:600; margin-bottom:4px;">🏦 Manage Loans</div>', unsafe_allow_html=True)
             if st.button("🏦 Add / Update Month-Wise Loans", type="primary", use_container_width=True, key="btn_open_loan_tab"):
                 open_pending_loan_modal()
         with l_top2:
-            loan_chart_style = st.radio(
+            loan_chart_style = button_selector(
                 "📊 Loan Chart Style",
                 ["Donut", "Solid Pie", "Bar"],
-                horizontal=True,
-                key="loan_chart_style_radio"
+                key="loan_chart_style_btn"
             )
 
         loan_all_df = df[(df["pending_loan"] > 0) | (df["category"] == "Loans & EMIs") | (df["category"].isin(LOAN_CATEGORY_MAP.keys()))].copy()
