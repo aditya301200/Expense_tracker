@@ -1,37 +1,70 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Das Family Tracker</title>
-    <link rel="manifest" href="manifest.json">
-    <meta name="theme-color" content="#0B192C">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <style>
-        html, body {
-            margin: 0;
-            padding: 0;
-            width: 100%;
-            height: 100%;
-            background-color: #0E1117;
-            overflow: hidden;
-        }
-        iframe {
-            width: 100%;
-            height: 100%;
-            border: none;
-        }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>Das Family Expense & Loan Tracker</title>
+
+  <!-- PWA Manifest & Theme Colors -->
+  <link rel="manifest" href="./manifest.json" />
+  <meta name="theme-color" content="#0B192C" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Das Tracker" />
+
+  <!-- App Icons -->
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png" />
+  <link rel="apple-touch-icon" href="./icon-192.png" />
+
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #0E1117;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .iframe-container {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      width: 100vw;
+      height: 100dvh;
+      border: none;
+    }
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: block;
+    }
+  </style>
 </head>
 <body>
-    <!-- Embeds your live Streamlit Cloud backend with embedding enabled -->
-    <iframe src="https://your-app-name.streamlit.app/?embed=true" allow="geolocation; microphone; camera"></iframe>
+  <div class="iframe-container">
+    <iframe
+      src="https://expensetrac-adi.streamlit.app/?embed=true"
+      allow="clipboard-read; clipboard-write; fullscreen"
+      title="Das Family Expense & Loan Tracker">
+    </iframe>
+  </div>
 
-    <script>
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('sw.js');
-        }
-    </script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch((err) => {
+          console.log('ServiceWorker registration failed:', err);
+        });
+      });
+    }
+  </script>
 </body>
 </html>
