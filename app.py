@@ -911,21 +911,21 @@ def get_active_redirect_uri():
     local_uri = str(st.secrets.get("REDIRECT_URI_LOCAL", "")).strip().rstrip("/")
     prod_uri = str(st.secrets.get("REDIRECT_URI_PROD", "")).strip().rstrip("/")
 
-    if has_secret("REDIRECT_URI"):
-        raw_uri = st.secrets["REDIRECT_URI"]
-        if isinstance(raw_uri, (list, tuple)):
-            for u in raw_uri:
-                u_clean = str(u).strip().rstrip("/")
-                if "localhost" in u_clean or "127.0.0.1" in u_clean:
-                    local_uri = u_clean
-                elif u_clean:
-                    prod_uri = u_clean
-        else:
-            for u_clean in [p.strip().rstrip("/") for p in str(raw_uri).split(",") if p.strip()]:
-                if "localhost" in u_clean or "127.0.0.1" in u_clean:
-                    local_uri = u_clean
-                else:
-                    prod_uri = u_clean
+    # if has_secret("REDIRECT_URI"):
+    #     raw_uri = st.secrets["REDIRECT_URI"]
+    #     if isinstance(raw_uri, (list, tuple)):
+    #         for u in raw_uri:
+    #             u_clean = str(u).strip().rstrip("/")
+    #             if "localhost" in u_clean or "127.0.0.1" in u_clean:
+    #                 local_uri = u_clean
+    #             elif u_clean:
+    #                 prod_uri = u_clean
+    #     else:
+    #         for u_clean in [p.strip().rstrip("/") for p in str(raw_uri).split(",") if p.strip()]:
+    #             if "localhost" in u_clean or "127.0.0.1" in u_clean:
+    #                 local_uri = u_clean
+    #             else:
+    #                 prod_uri = u_clean
 
     # If explicitly on localhost / 127.0.0.1
     if "localhost" in host or "127.0.0.1" in host:
@@ -1073,7 +1073,7 @@ def check_authentication():
             type="primary",
             use_container_width=True
         )
-        st.caption(f"🔗 Redirect target: `{active_redirect_uri}`")
+        # st.caption(f"🔗 Redirect target: `{active_redirect_uri}`")
 
     if has_pin:
         if has_native_oidc or has_google_oauth:
