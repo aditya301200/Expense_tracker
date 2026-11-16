@@ -882,11 +882,68 @@ def inject_mobile_ux_fixes_js():
 # ==========================================
 # 3. GOOGLE (GMAIL) OAUTH2 + FAMILY PIN AUTH
 # ==========================================
+# ==========================================
+# 3. GOOGLE (GMAIL) OAUTH2 + FAMILY PIN AUTH
+# ==========================================
 def has_secret(key):
     try:
         return key in st.secrets and bool(st.secrets[key])
     except Exception:
         return False
+
+
+def get_active_redirect_uri():
+    """
+    Automatically detects whether the app is opened on localhost (127.0.0.1 / localhost)
+    or on the main hosted Streamlit Cloud URL, and picks the matching Redirect URI!
+    Supports:
+      - REDIRECT_URI_LOCAL & REDIRECT_URI_PROD in st.secrets
+      - OR a list in REDIRECT_URI = ["http://localhost:8501", "https://...streamlit.app"]
+      - OR automatic header detection from st.context.headers["Host"]
+    """
+    host = ""
+    try:
+        if hasattr(st, "context") and hasattr(st.context, "headers"):
+            host = str(st.context.headers.get("Host") or st.context.headers.get("host") or "").strip().lower()
+    except Exception:
+        host = ""
+
+    is_local = ("localhost" in host) or ("127.0.0.1" in host)
+
+    # Collect configured local & prod URIs from secrets
+    local_uri = str(st.secrets.get("REDIRECT_URI_LOCAL", "http://localhost:8501")).strip().rstrip("/")
+    prod_uri = str(st.secrets.get("REDIRECT_URI_PROD", "")).strip().rstrip("/")
+
+    if has_secret("REDIRECT_URI"):
+        raw_uri = st.secrets["REDIRECT_URI"]
+        if isinstance(raw_uri, (list, tuple)):
+            for u in raw_uri:
+                u_clean = str(u).strip().rstrip("/")
+                if "localhost" in u_clean or "127.0.0.1" in u_clean:
+                    local_uri = u_clean
+                elif u_clean:
+                    prod_uri = u_clean
+        else:
+            # Support comma-separated string or single URL string
+            parts = [p.strip().rstrip("/") for p in str(raw_uri).split(",") if p.strip()]
+            for u_clean in parts:
+                if "localhost" in u_clean or "127.0.0.1" in u_clean:
+                    local_uri = u_clean
+                else:
+                    prod_uri = u_clean
+
+    # 1. If running on localhost, always return the localhost URI
+    if is_local:
+        return f"http://{host}" if host else local_uri
+
+    # 2. If running on the hosted cloud server, return prod_uri (or build from Host header)
+    if prod_uri:
+        return prod_uri
+    if host:
+        return f"https://{host}"
+
+    return local_uri
+
 
 def get_allowed_emails():
     """Returns lowercase list of whitelisted Gmail addresses from st.secrets['ALLOWED_EMAILS'] if configured."""
@@ -897,11 +954,13 @@ def get_allowed_emails():
         return [str(e).strip().lower() for e in raw if str(e).strip()]
     return [str(e).strip().lower() for e in str(raw).split(",") if str(e).strip()]
 
+
 def is_email_authorized(email_str):
     allowed = get_allowed_emails()
     if not allowed:
-        return True  # If no whitelist is set, any valid Google login is allowed
+        return True
     return str(email_str).strip().lower() in allowed
+
 
 def exchange_google_code_for_user(code_str, client_id, client_secret, redirect_uri):
     """Exchanges Google OAuth2 ?code=... for user profile (email, name, picture) using pure Python urllib."""
@@ -933,13 +992,11 @@ def exchange_google_code_for_user(code_str, client_id, client_secret, redirect_u
     with urllib.request.urlopen(user_req, timeout=10) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
+
 def check_authentication():
     """
-    Renders a clean, full-width mobile login page (like before!) without multi-column squishing.
-    Supports:
-    1. Streamlit Native OIDC (`st.login()` / `[auth]` in secrets.toml)
-    2. Direct Google OAuth 2.0 (`GOOGLE_CLIENT_ID` & `GOOGLE_CLIENT_SECRET` in secrets.toml)
-    3. Family PIN (`APP_PIN` in secrets.toml)
+    Renders a clean, full-width mobile login page and automatically selects
+    between your Localhost URL and Hosted Cloud URL for Google OAuth2!
     """
     has_native_oidc = hasattr(st, "user") and hasattr(st, "login") and has_secret("auth")
     has_google_oauth = has_secret("GOOGLE_CLIENT_ID") and has_secret("GOOGLE_CLIENT_SECRET")
@@ -950,6 +1007,9 @@ def check_authentication():
 
     if st.session_state.get("authenticated", False):
         return True
+
+    # Auto-detect whether user is on Localhost or Hosted Cloud URL
+    active_redirect_uri = get_active_redirect_uri()
 
     # Check Streamlit Native OIDC login status
     if has_native_oidc and getattr(st.user, "is_logged_in", False):
@@ -971,9 +1031,8 @@ def check_authentication():
         auth_code = st.query_params["code"]
         client_id = str(st.secrets["GOOGLE_CLIENT_ID"]).strip()
         client_secret = str(st.secrets["GOOGLE_CLIENT_SECRET"]).strip()
-        redirect_uri = str(st.secrets.get("REDIRECT_URI", "http://localhost:8501")).strip().rstrip("/")
         try:
-            user_info = exchange_google_code_for_user(auth_code, client_id, client_secret, redirect_uri)
+            user_info = exchange_google_code_for_user(auth_code, client_id, client_secret, active_redirect_uri)
             st.query_params.clear()
             if user_info and user_info.get("email"):
                 u_email = user_info["email"]
@@ -987,9 +1046,9 @@ def check_authentication():
                     st.error(f"🚫 Access Denied: `{u_email}` is not authorized to access this family tracker.")
         except Exception as e:
             st.query_params.clear()
-            st.error(f"⚠️ Google Sign-In failed or expired: {e}")
+            st.error(f"⚠️ Google Sign-In failed or expired (Redirect URI used: `{active_redirect_uri}`): {e}")
 
-    # Clean, Full-Width Mobile Login View (Exactly like before — no st.columns squishing!)
+    # Clean, Full-Width Mobile Login View
     st.markdown(
         f'<div class="app-top-title"><img src="{APP_ICON_URI}" class="app-logo-img"/> 🔒 Das Family Tracker</div>',
         unsafe_allow_html=True
@@ -1000,13 +1059,12 @@ def check_authentication():
         if st.button("🔵 Sign in with Google (Gmail)", type="primary", use_container_width=True):
             st.login()
 
-    # 2. Direct Google OAuth2 Login Link Button
+    # 2. Direct Google OAuth2 Login Link Button (Uses auto-detected Local or Prod URL)
     elif has_google_oauth:
         client_id = str(st.secrets["GOOGLE_CLIENT_ID"]).strip()
-        redirect_uri = str(st.secrets.get("REDIRECT_URI", "http://localhost:8501")).strip().rstrip("/")
         oauth_params = urllib.parse.urlencode({
             "client_id": client_id,
-            "redirect_uri": redirect_uri,
+            "redirect_uri": active_redirect_uri,
             "response_type": "code",
             "scope": "openid email profile",
             "access_type": "online",
@@ -1028,7 +1086,7 @@ def check_authentication():
             unsafe_allow_html=True
         )
 
-    # 3. Family PIN Login (Full-width layout just like before)
+    # 3. Family PIN Login
     if has_pin:
         if has_native_oidc or has_google_oauth:
             st.markdown(
