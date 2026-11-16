@@ -908,7 +908,7 @@ def get_active_redirect_uri():
     except Exception:
         host = ""
 
-    local_uri = str(st.secrets.get("REDIRECT_URI_LOCAL", "http://localhost:8501")).strip().rstrip("/")
+    local_uri = str(st.secrets.get("REDIRECT_URI_LOCAL", "")).strip().rstrip("/")
     prod_uri = str(st.secrets.get("REDIRECT_URI_PROD", "")).strip().rstrip("/")
 
     if has_secret("REDIRECT_URI"):
