@@ -1,4 +1,5 @@
 import warnings
+
 warnings.filterwarnings("ignore")
 
 import streamlit as st
@@ -7,10 +8,13 @@ import pandas as pd
 import sqlite3
 import re
 import os
+import json
 import base64
 import calendar
+import urllib.parse
+import urllib.request
 import html as html_lib
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import plotly.express as px
 import plotly.io as pio
 
@@ -19,6 +23,29 @@ try:
     import psycopg2
 except ImportError:
     psycopg2 = None
+
+# ==========================================
+# 0. INDIAN STANDARD TIME (IST - UTC+5:30)
+# ==========================================
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def now_ist():
+    """Returns current datetime strictly in Indian Standard Time (IST), even on UTC cloud servers."""
+    return datetime.now(IST).replace(tzinfo=None)
+
+
+def today_ist():
+    """Returns current date strictly in Indian Standard Time (IST)."""
+    return datetime.now(IST).date()
+
+
+def format_ist_time(dt=None):
+    """Formats a datetime as '08:15:30 PM IST'."""
+    if dt is None:
+        dt = now_ist()
+    return dt.strftime("%I:%M:%S %p IST")
+
 
 # ==========================================
 # 1. PAGE CONFIGURATION, PWA ICON & CSS
@@ -30,8 +57,9 @@ st.set_page_config(
     page_title="Das Family Tracker",
     page_icon=PAGE_ICON,
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="collapsed",
 )
+
 
 def get_app_icon_data_uri():
     """Loads app_icon.png as base64 Data URI for mobile home-screen icon, or uses a sleek SVG fallback."""
@@ -42,7 +70,7 @@ def get_app_icon_data_uri():
                 return f"data:image/png;base64,{b64}"
         except Exception:
             pass
-    svg = """<svg xmlns="[http://www.w3.org/2000/svg](http://www.w3.org/2000/svg)" viewBox="0 0 512 512">
+    svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
     <rect width="512" height="512" rx="115" fill="#0B192C"/>
     <rect x="24" y="24" width="464" height="464" rx="95" fill="none" stroke="#D4AF37" stroke-width="10"/>
     <path d="M120 390 L210 300 L280 340 L390 210" fill="none" stroke="#2ECC71" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
@@ -50,6 +78,7 @@ def get_app_icon_data_uri():
     </svg>"""
     b64_svg = base64.b64encode(svg.encode("utf-8")).decode("utf-8")
     return f"data:image/svg+xml;base64,{b64_svg}"
+
 
 APP_ICON_URI = get_app_icon_data_uri()
 
@@ -71,12 +100,12 @@ def button_selector(label, options, key, default=None):
     if label:
         st.markdown(
             f'<div style="font-size:0.86rem; font-weight:600; margin-bottom:4px;">{label}</div>',
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
 
     cols = st.columns(len(options))
     for idx, opt in enumerate(options):
-        is_selected = (st.session_state[state_key] == opt)
+        is_selected = st.session_state[state_key] == opt
         with cols[idx]:
             st.button(
                 opt,
@@ -84,20 +113,15 @@ def button_selector(label, options, key, default=None):
                 type="primary" if is_selected else "secondary",
                 use_container_width=True,
                 on_click=_update_button_selector_state,
-                args=(state_key, opt)
+                args=(state_key, opt),
             )
 
     return st.session_state[state_key]
 
 
 # Responsive CSS:
-# - Desktop / Laptop (> 768px): Spacious 2-column side-by-side layout & full DataFrame tables
-# - Mobile Phone (<= 768px):
-#     * Select Budget Month (top, 100% width) + Chart Style (bottom, 100% width)
-#     * Manage Loans (top, 100% width) + Loan Chart Style (bottom, 100% width)
-#     * Net Savings & Delta side-by-side on one line for both mobile and desktop
-#     * Scheduled Bills, Copy Month, Modify Entry, Delete Entry in 2x2 grid with semantic UI/UX colors
-st.markdown("""
+st.markdown(
+    """
 <style>
     .block-container {
         padding-top: 2.8rem !important;
@@ -121,6 +145,29 @@ st.markdown("""
         border-radius: 8px;
         object-fit: cover;
         box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    }
+    /* Google Sign-In Button Styling */
+    .google-login-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        width: 100%;
+        background-color: #ffffff;
+        color: #1f2937 !important;
+        font-weight: 600;
+        font-size: 0.95rem;
+        padding: 11px 18px;
+        border-radius: 10px;
+        border: 1px solid #d1d5db;
+        text-decoration: none !important;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+        transition: all 0.15s ease;
+        margin-bottom: 10px;
+    }
+    .google-login-btn:hover {
+        background-color: #f3f4f6;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.25);
     }
     /* Make selectbox inputs look and behave like uneditable dropdowns */
     div[data-baseweb="select"] input {
@@ -288,7 +335,6 @@ st.markdown("""
             height: 26px !important;
             border-radius: 6px !important;
         }
-        /* Default horizontal blocks on mobile: 2-col or 3-col grid for buttons & KPI metrics */
         div[data-testid="stHorizontalBlock"] {
             display: flex !important;
             flex-direction: row !important;
@@ -302,10 +348,7 @@ st.markdown("""
             min-width: calc(33.33% - 6px) !important;
         }
 
-        /* FORCE 100% FULL-WIDTH VERTICAL STACK ON MOBILE FOR:
-           1. Select Budget Month (top, full width) + Chart Style (bottom, full width)
-           2. Manage Loans (top, full width) + Loan Chart Style (bottom, full width)
-           3. All Chart / Graph rows & Summary Table sections */
+        /* FORCE 100% FULL-WIDTH VERTICAL STACK ON MOBILE FOR MARKED ROWS & CHARTS */
         div[data-testid="stHorizontalBlock"].das-force-vertical-mobile,
         div[data-testid="stHorizontalBlock"]:has(.v-stack-trigger),
         div[data-testid="stHorizontalBlock"]:has(div[data-testid="stPlotlyChart"]) {
@@ -324,7 +367,7 @@ st.markdown("""
             width: 100% !important;
         }
 
-        /* Keep nested button rows (e.g. Donut / Solid Pie / Bar buttons OR Chart Title + Enlarge button) horizontal on 1 line! */
+        /* Keep nested button rows horizontal on 1 line */
         div[data-testid="stHorizontalBlock"] div[data-testid="stHorizontalBlock"] {
             flex-direction: row !important;
             flex-wrap: nowrap !important;
@@ -388,26 +431,25 @@ st.markdown("""
         }
     }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 PLOTLY_MOBILE_CONFIG = {
     "displayModeBar": False,
     "responsive": True,
-    "doubleClick": "reset"
+    "doubleClick": "reset",
 }
-PLOTLY_POPUP_CONFIG = {
-    "displayModeBar": True,
-    "displaylogo": False,
-    "responsive": True
-}
-CHART_HEIGHT = 240
-POPUP_CHART_HEIGHT = 500
+PLOTLY_POPUP_CONFIG = {"displayModeBar": True, "displaylogo": False, "responsive": True}
+CHART_HEIGHT = 260
+POPUP_CHART_HEIGHT = 520
 RECYCLE_BIN_RETENTION_DAYS = 3
 SALARY_CUTOFF_DAY = 24
 AUTO_REFRESH_INTERVAL_SECONDS = 60
 
+
 # ==========================================
-# 2. INDIAN CURRENCY, PARSER & MOBILE PWA JS
+# 2. INDIAN CURRENCY, READABLE BAR CHARTS & JS
 # ==========================================
 def format_inr(val, decimals=0):
     """Formats numbers in Indian Standard (e.g., ₹12,26,956 or ₹3,18,885.00)."""
@@ -443,10 +485,7 @@ def format_inr(val, decimals=0):
 
 
 def render_net_savings_metric(label, val):
-    """
-    Renders Net Savings and its Delta side-by-side on the same line: e.g. ₹2,349 (₹2,349)
-    Works identically on both Mobile and Desktop!
-    """
+    """Renders Net Savings and its Delta side-by-side on the same line: e.g. ₹2,349 (↑ ₹2,349)."""
     val_str = format_inr(val)
     is_pos = val >= 0
     delta_cls = "delta-pos" if is_pos else "delta-neg"
@@ -457,9 +496,9 @@ def render_net_savings_metric(label, val):
         f'<div class="net-savings-row">'
         f'<span class="net-savings-val">{val_str}</span>'
         f'<span class="net-savings-delta {delta_cls}">({arrow} {val_str})</span>'
-        f'</div>'
-        f'</div>',
-        unsafe_allow_html=True
+        f"</div>"
+        f"</div>",
+        unsafe_allow_html=True,
     )
 
 
@@ -515,12 +554,8 @@ def get_effective_accounting_date(row):
     sub_cat = str(row.get("sub_category", "")).lower()
     details = str(row.get("details", "")).lower()
 
-    is_salary = (
-        t_type == "Income" and (
-            "salary" in sub_cat or
-            "salary" in details or
-            "tata consultancy" in details
-        )
+    is_salary = t_type == "Income" and (
+        "salary" in sub_cat or "salary" in details or "tata consultancy" in details
     )
 
     if is_salary and dt.day >= SALARY_CUTOFF_DAY:
@@ -537,13 +572,59 @@ def safe_due_date(year, month, due_day):
     return date(year, month, min(max(1, int(due_day)), max_d))
 
 
+def style_readable_bar(fig, orientation="h", max_val=0.0, num_bars=5, show_text=True):
+    """
+    Makes bar charts crisp and 100% readable on both mobile and desktop:
+    - Places ₹ labels cleanly outside the bars (cliponaxis=False) so text never gets squished or rotated
+    - Adds 28% axis headroom so outside ₹ amounts never clip at the edge
+    - Dynamically adjusts height for horizontal bar charts with many categories
+    """
+    if show_text:
+        fig.update_traces(
+            textposition="outside", cliponaxis=False, textfont=dict(size=11)
+        )
+
+    if orientation == "h":
+        dyn_h = max(CHART_HEIGHT, min(420, int(num_bars) * 34 + 50))
+        fig.update_layout(
+            height=dyn_h,
+            xaxis=dict(
+                range=[0, float(max_val) * 1.30] if max_val > 0 else None,
+                showgrid=True,
+                gridcolor="rgba(128,128,128,0.15)",
+                title="",
+                tickfont=dict(size=10),
+            ),
+            yaxis=dict(title="", automargin=True, tickfont=dict(size=11)),
+            margin=dict(t=12, b=16, l=10, r=65),
+        )
+    else:
+        fig.update_layout(
+            height=280,
+            yaxis=dict(
+                range=[0, float(max_val) * 1.28] if max_val > 0 else None,
+                showgrid=True,
+                gridcolor="rgba(128,128,128,0.15)",
+                title="",
+                automargin=True,
+                tickfont=dict(size=10),
+            ),
+            xaxis=dict(
+                title="",
+                automargin=True,
+                tickangle=-25 if num_bars > 4 else 0,
+                tickfont=dict(size=11),
+            ),
+            margin=dict(t=28, b=36, l=10, r=15),
+        )
+    return fig
+
+
 def style_compact_chart(fig, show_legend=False):
-    fig.update_layout(
-        height=CHART_HEIGHT,
-        margin=dict(t=8, b=8, l=8, r=8),
-        showlegend=show_legend,
-        font=dict(size=11)
-    )
+    current_h = fig.layout.height or CHART_HEIGHT
+    fig.update_layout(height=current_h, showlegend=show_legend, font=dict(size=11))
+    if fig.data and fig.data[0].type == "pie":
+        fig.update_layout(margin=dict(t=10, b=10, l=10, r=10))
     return fig
 
 
@@ -555,19 +636,11 @@ def render_responsive_table_or_cards(desktop_df, cards_list_html):
     st.markdown('<div class="desktop-table-marker"></div>', unsafe_allow_html=True)
     st.dataframe(desktop_df, use_container_width=True, hide_index=True)
 
-    full_html = '<div class="mobile-card-feed">' + "".join(cards_list_html) + '</div>'
+    full_html = '<div class="mobile-card-feed">' + "".join(cards_list_html) + "</div>"
     st.markdown(full_html, unsafe_allow_html=True)
 
 
 def inject_mobile_ux_fixes_js():
-    """
-    1. Injects PWA Web Manifest & Apple/Android Home Screen icon tags.
-    2. Locks all dropdowns (readOnly = true, inputmode = 'none') so mobile keyboard never pops up.
-    3. Marks .v-stack-trigger parent horizontal blocks with .das-force-vertical-mobile so Select Budget Month & Chart Style
-       (and Manage Loans & Loan Chart Style) stack 100% full width vertically on mobile.
-    4. Applies semantic UI/UX colors to Scheduled Bills (Indigo), Copy Month (Teal), Modify (Amber), and Delete (Crimson).
-    5. Attaches live Indian words converter underneath any number input box & double-tap chart listener.
-    """
     components.html(
         f"""
         <script>
@@ -688,7 +761,6 @@ def inject_mobile_ux_fixes_js():
             }}
 
             function applyMobileFixes() {{
-                // A. Lock dropdowns so mobile keyboard never pops up
                 const selectInputs = parentDoc.querySelectorAll('div[data-baseweb="select"] input');
                 selectInputs.forEach((inp) => {{
                     if (inp.getAttribute('readonly') !== 'readonly') {{
@@ -698,7 +770,6 @@ def inject_mobile_ux_fixes_js():
                     }}
                 }});
 
-                // B. Tag parent stHorizontalBlock of any .v-stack-trigger so it stacks 100% full-width on mobile
                 const vTriggers = parentDoc.querySelectorAll('.v-stack-trigger');
                 vTriggers.forEach((trig) => {{
                     const hBlock = trig.closest('div[data-testid="stHorizontalBlock"]');
@@ -707,34 +778,28 @@ def inject_mobile_ux_fixes_js():
                     }}
                 }});
 
-                // C. Apply Standard UI/UX Semantic Colors to Action Buttons (Modify, Delete, Copy, Scheduled)
                 const allButtons = parentDoc.querySelectorAll('.stButton > button');
                 allButtons.forEach((btn) => {{
                     const txt = (btn.innerText || "").trim();
                     if (txt.includes("✏️ Modify")) {{
-                        // Amber / Warning for Modify / Edit
                         btn.style.backgroundColor = "rgba(245, 158, 11, 0.16)";
                         btn.style.borderColor = "#F59E0B";
                         btn.style.color = "#FBBF24";
                     }} else if (txt.includes("🗑️ Delete") || txt.includes("🗑️ Move to Bin") || txt.includes("🔥 Delete Forever")) {{
-                        // Crimson / Danger Red for Delete
                         btn.style.backgroundColor = "rgba(239, 68, 68, 0.16)";
                         btn.style.borderColor = "#EF4444";
                         btn.style.color = "#F87171";
                     }} else if (txt.includes("🔄 Copy Month")) {{
-                        // Sky Teal / Info Blue for Copy / Clone
                         btn.style.backgroundColor = "rgba(14, 165, 233, 0.16)";
                         btn.style.borderColor = "#0EA5E9";
                         btn.style.color = "#38BDF8";
                     }} else if (txt.includes("⏰ Scheduled Bills") || txt.includes("⏰ Upcoming")) {{
-                        // Indigo / Purple for Scheduled / Reminders
                         btn.style.backgroundColor = "rgba(99, 102, 241, 0.16)";
                         btn.style.borderColor = "#6366F1";
                         btn.style.color = "#818CF8";
                     }}
                 }});
 
-                // D. Live Indian words underneath number inputs
                 const numInputs = parentDoc.querySelectorAll('div[data-testid="stNumberInput"] input');
                 numInputs.forEach((input) => {{
                     if (input.dataset.indianWordsAttached === "true") return;
@@ -765,7 +830,6 @@ def inject_mobile_ux_fixes_js():
                     updateText();
                 }});
 
-                // E. Double-tap / double-click chart to open Fullscreen Enlarge Modal
                 const charts = parentDoc.querySelectorAll('div[data-testid="stPlotlyChart"]');
                 charts.forEach((chartDiv) => {{
                     if (chartDiv.dataset.dblTapAttached === "true") return;
@@ -808,8 +872,9 @@ def inject_mobile_ux_fixes_js():
         width=0,
     )
 
+
 # ==========================================
-# 3. SIMPLE FAMILY PIN AUTHENTICATION
+# 3. GOOGLE (GMAIL) OAUTH2 + FAMILY PIN AUTH
 # ==========================================
 def has_secret(key):
     try:
@@ -817,26 +882,218 @@ def has_secret(key):
     except Exception:
         return False
 
-def check_pin():
-    if not has_secret("APP_PIN"):
+
+def get_allowed_emails():
+    """Returns lowercase list of whitelisted Gmail addresses from st.secrets['ALLOWED_EMAILS'] if configured."""
+    if not has_secret("ALLOWED_EMAILS"):
+        return []
+    raw = st.secrets["ALLOWED_EMAILS"]
+    if isinstance(raw, (list, tuple)):
+        return [str(e).strip().lower() for e in raw if str(e).strip()]
+    return [str(e).strip().lower() for e in str(raw).split(",") if str(e).strip()]
+
+
+def is_email_authorized(email_str):
+    allowed = get_allowed_emails()
+    if not allowed:
+        return True  # If no whitelist is set, any valid Google login is allowed
+    return str(email_str).strip().lower() in allowed
+
+
+def exchange_google_code_for_user(code_str, client_id, client_secret, redirect_uri):
+    """Exchanges Google OAuth2 ?code=... for user profile (email, name, picture) using pure Python urllib."""
+    token_url = "https://oauth2.googleapis.com/token"
+    data = urllib.parse.urlencode(
+        {
+            "code": code_str,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        }
+    ).encode("utf-8")
+
+    req = urllib.request.Request(
+        token_url,
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        token_data = json.loads(resp.read().decode("utf-8"))
+
+    access_token = token_data.get("access_token")
+    if not access_token:
+        return None
+
+    user_req = urllib.request.Request(
+        "https://www.googleapis.com/oauth2/v2/userinfo",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    with urllib.request.urlopen(user_req, timeout=10) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def check_authentication():
+    """
+    Supports:
+    1. Streamlit Native OIDC (`st.login()` / `[auth]` in secrets.toml)
+    2. Direct Google OAuth 2.0 (`GOOGLE_CLIENT_ID` & `GOOGLE_CLIENT_SECRET` in secrets.toml)
+    3. Family PIN (`APP_PIN` in secrets.toml)
+    """
+    has_native_oidc = (
+        hasattr(st, "user") and hasattr(st, "login") and has_secret("auth")
+    )
+    has_google_oauth = has_secret("GOOGLE_CLIENT_ID") and has_secret(
+        "GOOGLE_CLIENT_SECRET"
+    )
+    has_pin = has_secret("APP_PIN")
+
+    # If no auth secrets are configured at all, let user straight in
+    if not (has_native_oidc or has_google_oauth or has_pin):
         return True
+
+    # Check if already authenticated in session_state
     if st.session_state.get("authenticated", False):
         return True
 
-    st.markdown(
-        f'<div class="app-top-title"><img src="{APP_ICON_URI}" class="app-logo-img"/> 🔒 Das Family Tracker</div>',
-        unsafe_allow_html=True
-    )
-    pin_input = st.text_input("Enter Family PIN:", type="password", placeholder="Tap to enter PIN")
-    if st.button("🔓 Unlock Dashboard", type="primary", use_container_width=True):
-        if pin_input == str(st.secrets["APP_PIN"]):
+    # Check Streamlit Native OIDC login status
+    if has_native_oidc and getattr(st.user, "is_logged_in", False):
+        u_email = getattr(st.user, "email", "")
+        u_name = getattr(st.user, "name", u_email)
+        if is_email_authorized(u_email):
             st.session_state["authenticated"] = True
-            st.rerun()
+            st.session_state["user_email"] = u_email
+            st.session_state["user_name"] = u_name
+            return True
         else:
-            st.error("❌ Incorrect PIN. Please try again.")
+            st.error(f"🚫 Access Denied: `{u_email}` is not in `ALLOWED_EMAILS`.")
+            if st.button("🚪 Sign Out", use_container_width=True):
+                st.logout()
+            return False
+
+    # Check Direct Google OAuth2 callback code in URL query params (?code=...)
+    if has_google_oauth and "code" in st.query_params:
+        auth_code = st.query_params["code"]
+        client_id = str(st.secrets["GOOGLE_CLIENT_ID"]).strip()
+        client_secret = str(st.secrets["GOOGLE_CLIENT_SECRET"]).strip()
+        redirect_uri = (
+            str(st.secrets.get("REDIRECT_URI", "http://localhost:8501"))
+            .strip()
+            .rstrip("/")
+        )
+        try:
+            user_info = exchange_google_code_for_user(
+                auth_code, client_id, client_secret, redirect_uri
+            )
+            st.query_params.clear()
+            if user_info and user_info.get("email"):
+                u_email = user_info["email"]
+                u_name = user_info.get("name", u_email)
+                if is_email_authorized(u_email):
+                    st.session_state["authenticated"] = True
+                    st.session_state["user_email"] = u_email
+                    st.session_state["user_name"] = u_name
+                    st.rerun()
+                else:
+                    st.error(
+                        f"🚫 Access Denied: `{u_email}` is not authorized to access this family tracker."
+                    )
+        except Exception as e:
+            st.query_params.clear()
+            st.error(f"⚠️ Google Sign-In failed or expired: {e}")
+
+    # Render Login Card
+    _, login_col, _ = st.columns([1, 1.5, 1])
+    with login_col:
+        with st.container(border=True):
+            st.markdown(
+                f'<div class="app-top-title" style="justify-content:center;">'
+                f'<img src="{APP_ICON_URI}" class="app-logo-img"/> 🔒 Das Family Tracker'
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                "Sign in with your Google (Gmail) account or enter your Family PIN to unlock."
+            )
+
+            # 1. Native Streamlit OIDC Google Login Button
+            if has_native_oidc:
+                if st.button(
+                    "🔵 Sign in with Google (Gmail)",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    st.login()
+
+            # 2. Direct Google OAuth2 Login Link Button
+            elif has_google_oauth:
+                client_id = str(st.secrets["GOOGLE_CLIENT_ID"]).strip()
+                redirect_uri = (
+                    str(st.secrets.get("REDIRECT_URI", "http://localhost:8501"))
+                    .strip()
+                    .rstrip("/")
+                )
+                oauth_params = urllib.parse.urlencode(
+                    {
+                        "client_id": client_id,
+                        "redirect_uri": redirect_uri,
+                        "response_type": "code",
+                        "scope": "openid email profile",
+                        "access_type": "online",
+                        "prompt": "select_account",
+                    }
+                )
+                google_auth_url = (
+                    f"https://accounts.google.com/o/oauth2/v2/auth?{oauth_params}"
+                )
+                google_svg = (
+                    '<svg width="20" height="20" viewBox="0 0 48 48">'
+                    '<path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>'
+                    '<path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>'
+                    '<path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>'
+                    '<path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>'
+                    "</svg>"
+                )
+                st.markdown(
+                    f'<a href="{google_auth_url}" target="_top" class="google-login-btn">'
+                    f"{google_svg} <span>Sign in with Google (Gmail)</span>"
+                    f"</a>",
+                    unsafe_allow_html=True,
+                )
+
+            # 3. Family PIN Login (or Fallback)
+            if has_pin:
+                if has_native_oidc or has_google_oauth:
+                    st.markdown(
+                        '<div style="text-align:center; font-size:0.78rem; color:#9ca3af; margin: 6px 0;">— OR USE FAMILY PIN —</div>',
+                        unsafe_allow_html=True,
+                    )
+                pin_input = st.text_input(
+                    "Enter Family PIN:", type="password", placeholder="Tap to enter PIN"
+                )
+                if st.button(
+                    "🔓 Unlock with PIN", type="primary", use_container_width=True
+                ):
+                    if pin_input == str(st.secrets["APP_PIN"]):
+                        st.session_state["authenticated"] = True
+                        st.session_state["user_email"] = "PIN Verified"
+                        st.session_state["user_name"] = "Das Family"
+                        st.rerun()
+                    else:
+                        st.error("❌ Incorrect PIN. Please try again.")
+
+            if not (has_native_oidc or has_google_oauth):
+                with st.expander(
+                    "ℹ️ How to enable Google (Gmail) Sign-In", expanded=False
+                ):
+                    st.caption(
+                        "Add `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `REDIRECT_URI`, and optional `ALLOWED_EMAILS` "
+                        "to your Streamlit `secrets.toml` to enable 1-tap Gmail login!"
+                    )
     return False
 
-if not check_pin():
+
+if not check_authentication():
     st.stop()
 
 inject_mobile_ux_fixes_js()
@@ -848,21 +1105,103 @@ USE_POSTGRES = has_secret("DB_URL")
 LOCAL_DB_NAME = "expenses.db"
 
 DEFAULT_RECURRING_BILLS = [
-    ("Home rent", "Housing & Rent", "SBI", "Shared / Family", 6000.0, 15, "Monthly House Rent"),
-    ("Light Bill", "Utilities & Bills", "HDFC", "Shared / Family", 1200.0, 10, "Monthly Electricity Bill (Variable)"),
-    ("Gas Bill", "Utilities & Bills", "SBI", "Shared / Family", 968.0, 5, "HP Pay Direct Cylinder Booking"),
-    ("Mobile / Internet Bill", "Utilities & Bills", "HDFC", "Aditya Das", 470.82, 2, "Reliance JioFiber / Mobile Recharge"),
-    ("HDFC CC bill", "Credit Card Bills", "HDFC", "Aditya Das", 10000.0, 1, "Monthly HDFC Credit Card Bill (Variable)"),
-    ("AXIS CC bill", "Credit Card Bills", "HDFC", "Aditya Das", 5000.0, 5, "Flipkart Axis Credit Card Bill (Variable)"),
-    ("Consumer loan", "Loans & EMIs", "SBI", "Aditya Das", 1736.0, 2, "Bajaj Finance Auto-Pay EMI"),
-    ("HDFC loan", "Loans & EMIs", "HDFC", "Aditya Das", 9406.0, 7, "HDFC Personal Loan EMI"),
-    ("Gold Loan", "Loans & EMIs", "HDFC", "Amal Das", 500.0, 5, "Manappuram Gold Loan Interest / Payment"),
-    ("Mutual Fund", "Insurance & Investments", "SBI", "Aditya Das", 1000.0, 26, "Monthly PhonePe ICCL Mutual Fund SIP"),
+    (
+        "Home rent",
+        "Housing & Rent",
+        "SBI",
+        "Shared / Family",
+        6000.0,
+        15,
+        "Monthly House Rent",
+    ),
+    (
+        "Light Bill",
+        "Utilities & Bills",
+        "HDFC",
+        "Shared / Family",
+        1200.0,
+        10,
+        "Monthly Electricity Bill (Variable)",
+    ),
+    (
+        "Gas Bill",
+        "Utilities & Bills",
+        "SBI",
+        "Shared / Family",
+        968.0,
+        5,
+        "HP Pay Direct Cylinder Booking",
+    ),
+    (
+        "Mobile / Internet Bill",
+        "Utilities & Bills",
+        "HDFC",
+        "Aditya Das",
+        470.82,
+        2,
+        "Reliance JioFiber / Mobile Recharge",
+    ),
+    (
+        "HDFC CC bill",
+        "Credit Card Bills",
+        "HDFC",
+        "Aditya Das",
+        10000.0,
+        1,
+        "Monthly HDFC Credit Card Bill (Variable)",
+    ),
+    (
+        "AXIS CC bill",
+        "Credit Card Bills",
+        "HDFC",
+        "Aditya Das",
+        5000.0,
+        5,
+        "Flipkart Axis Credit Card Bill (Variable)",
+    ),
+    (
+        "Consumer loan",
+        "Loans & EMIs",
+        "SBI",
+        "Aditya Das",
+        1736.0,
+        2,
+        "Bajaj Finance Auto-Pay EMI",
+    ),
+    (
+        "HDFC loan",
+        "Loans & EMIs",
+        "HDFC",
+        "Aditya Das",
+        9406.0,
+        7,
+        "HDFC Personal Loan EMI",
+    ),
+    (
+        "Gold Loan",
+        "Loans & EMIs",
+        "HDFC",
+        "Amal Das",
+        500.0,
+        5,
+        "Manappuram Gold Loan Interest / Payment",
+    ),
+    (
+        "Mutual Fund",
+        "Insurance & Investments",
+        "SBI",
+        "Aditya Das",
+        1000.0,
+        26,
+        "Monthly PhonePe ICCL Mutual Fund SIP",
+    ),
 ]
+
 
 @st.cache_resource
 def get_pg_connection():
     return psycopg2.connect(st.secrets["DB_URL"])
+
 
 def get_connection():
     if USE_POSTGRES:
@@ -876,11 +1215,8 @@ def get_connection():
         return conn
     return sqlite3.connect(LOCAL_DB_NAME, check_same_thread=False)
 
+
 def get_db_fingerprint():
-    """
-    Ultra-fast O(1) query that returns a lightweight state signature of the database.
-    Used by the background auto-refresh monitor so the app NEVER reloads unless data actually changed!
-    """
     try:
         conn = get_connection()
         c = conn.cursor()
@@ -889,7 +1225,9 @@ def get_db_fingerprint():
             "FROM transactions WHERE deleted_at IS NULL OR deleted_at = ''"
         )
         r1 = c.fetchone()
-        c.execute("SELECT COUNT(*), COALESCE(SUM(expected_amount), 0) FROM recurring_bills WHERE is_active = 1")
+        c.execute(
+            "SELECT COUNT(*), COALESCE(SUM(expected_amount), 0) FROM recurring_bills WHERE is_active = 1"
+        )
         r2 = c.fetchone()
         c.close()
         if not USE_POSTGRES:
@@ -898,28 +1236,32 @@ def get_db_fingerprint():
     except Exception:
         return None
 
+
 def purge_expired_recycle_bin(conn=None):
     close_after = False
     if conn is None:
         conn = get_connection()
         close_after = not USE_POSTGRES
 
-    cutoff_str = (datetime.now() - timedelta(days=RECYCLE_BIN_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff_str = (now_ist() - timedelta(days=RECYCLE_BIN_RETENTION_DAYS)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
     c = conn.cursor()
     if USE_POSTGRES:
         c.execute(
             "DELETE FROM transactions WHERE deleted_at IS NOT NULL AND deleted_at <> '' AND deleted_at < %s",
-            (cutoff_str,)
+            (cutoff_str,),
         )
     else:
         c.execute(
             "DELETE FROM transactions WHERE deleted_at IS NOT NULL AND deleted_at <> '' AND deleted_at < ?",
-            (cutoff_str,)
+            (cutoff_str,),
         )
     conn.commit()
     c.close()
     if close_after:
         conn.close()
+
 
 @st.cache_resource
 def init_db_once():
@@ -941,10 +1283,18 @@ def init_db_once():
                 deleted_at TEXT DEFAULT NULL
             )
         """)
-        c.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS bank TEXT NOT NULL DEFAULT 'SBI'")
-        c.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS sub_category TEXT NOT NULL DEFAULT 'Miscellaneous'")
-        c.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS pending_loan NUMERIC(12, 2) NOT NULL DEFAULT 0.0")
-        c.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS deleted_at TEXT DEFAULT NULL")
+        c.execute(
+            "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS bank TEXT NOT NULL DEFAULT 'SBI'"
+        )
+        c.execute(
+            "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS sub_category TEXT NOT NULL DEFAULT 'Miscellaneous'"
+        )
+        c.execute(
+            "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS pending_loan NUMERIC(12, 2) NOT NULL DEFAULT 0.0"
+        )
+        c.execute(
+            "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS deleted_at TEXT DEFAULT NULL"
+        )
 
         c.execute("""
             CREATE TABLE IF NOT EXISTS recurring_bills (
@@ -961,10 +1311,13 @@ def init_db_once():
         """)
         c.execute("SELECT COUNT(*) FROM recurring_bills")
         if c.fetchone()[0] == 0:
-            c.executemany("""
+            c.executemany(
+                """
                 INSERT INTO recurring_bills (sub_category, category, bank, member, expected_amount, due_day, details, is_active)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, 1)
-            """, DEFAULT_RECURRING_BILLS)
+            """,
+                DEFAULT_RECURRING_BILLS,
+            )
     else:
         c.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
@@ -984,13 +1337,21 @@ def init_db_once():
         c.execute("PRAGMA table_info(transactions)")
         columns = [col[1] for col in c.fetchall()]
         if "bank" not in columns:
-            c.execute("ALTER TABLE transactions ADD COLUMN bank TEXT NOT NULL DEFAULT 'SBI'")
+            c.execute(
+                "ALTER TABLE transactions ADD COLUMN bank TEXT NOT NULL DEFAULT 'SBI'"
+            )
         if "sub_category" not in columns:
-            c.execute("ALTER TABLE transactions ADD COLUMN sub_category TEXT NOT NULL DEFAULT 'Miscellaneous'")
+            c.execute(
+                "ALTER TABLE transactions ADD COLUMN sub_category TEXT NOT NULL DEFAULT 'Miscellaneous'"
+            )
         if "pending_loan" not in columns:
-            c.execute("ALTER TABLE transactions ADD COLUMN pending_loan REAL NOT NULL DEFAULT 0.0")
+            c.execute(
+                "ALTER TABLE transactions ADD COLUMN pending_loan REAL NOT NULL DEFAULT 0.0"
+            )
         if "deleted_at" not in columns:
-            c.execute("ALTER TABLE transactions ADD COLUMN deleted_at TEXT DEFAULT NULL")
+            c.execute(
+                "ALTER TABLE transactions ADD COLUMN deleted_at TEXT DEFAULT NULL"
+            )
 
         c.execute("""
             CREATE TABLE IF NOT EXISTS recurring_bills (
@@ -1007,10 +1368,13 @@ def init_db_once():
         """)
         c.execute("SELECT COUNT(*) FROM recurring_bills")
         if c.fetchone()[0] == 0:
-            c.executemany("""
+            c.executemany(
+                """
                 INSERT INTO recurring_bills (sub_category, category, bank, member, expected_amount, due_day, details, is_active)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-            """, DEFAULT_RECURRING_BILLS)
+            """,
+                DEFAULT_RECURRING_BILLS,
+            )
 
     conn.commit()
     c.close()
@@ -1018,6 +1382,7 @@ def init_db_once():
     if not USE_POSTGRES:
         conn.close()
     return True
+
 
 init_db_once()
 
@@ -1031,28 +1396,84 @@ EXPENSE_MEMBERS = ["Amal Das", "Abhijit Das", "Aditya Das", "Shared / Family"]
 LOAN_CATEGORY_MAP = {
     "Gold Loan": ["Gold Loan", "Gold Loan 1", "Gold Loan 2", "Manappuram Gold Loan"],
     "Education Loan": ["EDU loan", "EDU loan 1", "EDU loan 2"],
-    "Consumer & Durable Loan": ["Consumer loan", "Consumer loan 1", "Consumer loan 2", "Bajaj Consumer Loan"],
-    "Bank & Personal Loan": ["HDFC loan", "Personal Loan", "Bandhan Bank Loan", "Other Loan / EMI"],
-    "Credit Card & Other Loan": ["HDFC CC Loan", "AXIS CC Loan", "Vehicle / Bike Loan", "Custom Loan"]
+    "Consumer & Durable Loan": [
+        "Consumer loan",
+        "Consumer loan 1",
+        "Consumer loan 2",
+        "Bajaj Consumer Loan",
+    ],
+    "Bank & Personal Loan": [
+        "HDFC loan",
+        "Personal Loan",
+        "Bandhan Bank Loan",
+        "Other Loan / EMI",
+    ],
+    "Credit Card & Other Loan": [
+        "HDFC CC Loan",
+        "AXIS CC Loan",
+        "Vehicle / Bike Loan",
+        "Custom Loan",
+    ],
 }
 
 EXPENSE_CATEGORY_MAP = {
-    "Loans & EMIs": ["Gold Loan", "Consumer loan", "EDU loan", "HDFC loan", "Other Loan / EMI"],
+    "Loans & EMIs": [
+        "Gold Loan",
+        "Consumer loan",
+        "EDU loan",
+        "HDFC loan",
+        "Other Loan / EMI",
+    ],
     "Credit Card Bills": ["HDFC CC bill", "AXIS CC bill", "Other CC bill"],
-    "Utilities & Bills": ["Light Bill", "Gas Bill", "Mobile / Internet Bill", "Water / Other Bill"],
-    "Insurance & Investments": ["LIC", "Mutual Fund", "Fixed Deposit / PPF", "Health / Vehicle Insurance"],
-    "Groceries & Food": ["Grocery", "Vegetables / Fish / Meat", "Dining / HungerBox", "Tea / Snacks"],
+    "Utilities & Bills": [
+        "Light Bill",
+        "Gas Bill",
+        "Mobile / Internet Bill",
+        "Water / Other Bill",
+    ],
+    "Insurance & Investments": [
+        "LIC",
+        "Mutual Fund",
+        "Fixed Deposit / PPF",
+        "Health / Vehicle Insurance",
+    ],
+    "Groceries & Food": [
+        "Grocery",
+        "Vegetables / Fish / Meat",
+        "Dining / HungerBox",
+        "Tea / Snacks",
+    ],
     "Housing & Rent": ["Home rent", "House Maintenance", "Appliances & Repairs"],
-    "Medical & Healthcare": ["Medicine Bill", "Doctor / Consultation", "Diagnostic / Lab Test"],
-    "Transport & Fuel": ["Fuel / IndianOil", "Public Transport / Cab", "Car / Bike Maintenance"],
-    "Shopping & Miscellaneous": ["Shopping & Personal", "Family Event / Gift", "Miscellaneous"]
+    "Medical & Healthcare": [
+        "Medicine Bill",
+        "Doctor / Consultation",
+        "Diagnostic / Lab Test",
+    ],
+    "Transport & Fuel": [
+        "Fuel / IndianOil",
+        "Public Transport / Cab",
+        "Car / Bike Maintenance",
+    ],
+    "Shopping & Miscellaneous": [
+        "Shopping & Personal",
+        "Family Event / Gift",
+        "Miscellaneous",
+    ],
 }
 
 INCOME_CATEGORY_MAP = {
-    "Salary & Regular Income": ["Monthly Salary", "Bonus / Incentives", "Pension / Family Contribution"],
+    "Salary & Regular Income": [
+        "Monthly Salary",
+        "Bonus / Incentives",
+        "Pension / Family Contribution",
+    ],
     "Business & Freelance": ["Business / Freelance", "Rental / Side Income"],
-    "Investment Returns": ["Interest / Dividends", "Mutual Fund / Maturity", "Other Income"],
-    "Other Income": ["Personal Loan Disbursed", "Other Income"]
+    "Investment Returns": [
+        "Interest / Dividends",
+        "Mutual Fund / Maturity",
+        "Other Income",
+    ],
+    "Other Income": ["Personal Loan Disbursed", "Other Income"],
 }
 
 SELF_TRANSFER_CATEGORY_MAP = {
@@ -1060,9 +1481,10 @@ SELF_TRANSFER_CATEGORY_MAP = {
         "Self Transfer (SBI <-> HDFC)",
         "FD Sweep-In (Internal)",
         "Self / Wallet Reversal",
-        "Reversal / Mandate Test"
+        "Reversal / Mandate Test",
     ]
 }
+
 
 def infer_loan_category(sub_cat_name, existing_cat=""):
     if existing_cat in LOAN_CATEGORY_MAP:
@@ -1078,12 +1500,14 @@ def infer_loan_category(sub_cat_name, existing_cat=""):
         return "Credit Card & Other Loan"
     return "Bank & Personal Loan"
 
+
 def get_category_map_for_type(t_type):
     if t_type == "Income":
         return INCOME_CATEGORY_MAP
     if t_type == "Self Transfer":
         return SELF_TRANSFER_CATEGORY_MAP
     return EXPENSE_CATEGORY_MAP
+
 
 def infer_parent_category(sub_cat_name, t_type="Expense"):
     if t_type == "Self Transfer":
@@ -1098,7 +1522,12 @@ def infer_parent_category(sub_cat_name, t_type="Expense"):
                 return parent_cat
 
     if t_type == "Income":
-        if "sal" in s_clean or "bonus" in s_clean or "pension" in s_clean or "contribution" in s_clean:
+        if (
+            "sal" in s_clean
+            or "bonus" in s_clean
+            or "pension" in s_clean
+            or "contribution" in s_clean
+        ):
             return "Salary & Regular Income"
         if "bus" in s_clean or "free" in s_clean or "rent" in s_clean:
             return "Business & Freelance"
@@ -1110,27 +1539,51 @@ def infer_parent_category(sub_cat_name, t_type="Expense"):
         return "Loans & EMIs"
     if "cc" in s_clean or "card" in s_clean:
         return "Credit Card Bills"
-    if "bill" in s_clean or "light" in s_clean or "gas" in s_clean or "recharge" in s_clean:
+    if (
+        "bill" in s_clean
+        or "light" in s_clean
+        or "gas" in s_clean
+        or "recharge" in s_clean
+    ):
         return "Utilities & Bills"
-    if "lic" in s_clean or "mutual" in s_clean or "sip" in s_clean or "insurance" in s_clean or "fixed deposit" in s_clean:
+    if (
+        "lic" in s_clean
+        or "mutual" in s_clean
+        or "sip" in s_clean
+        or "insurance" in s_clean
+        or "fixed deposit" in s_clean
+    ):
         return "Insurance & Investments"
-    if "grocer" in s_clean or "food" in s_clean or "veg" in s_clean or "dining" in s_clean or "hungerbox" in s_clean:
+    if (
+        "grocer" in s_clean
+        or "food" in s_clean
+        or "veg" in s_clean
+        or "dining" in s_clean
+        or "hungerbox" in s_clean
+    ):
         return "Groceries & Food"
     if "rent" in s_clean or "home" in s_clean or "house" in s_clean:
         return "Housing & Rent"
     if "med" in s_clean or "doctor" in s_clean:
         return "Medical & Healthcare"
-    if "fuel" in s_clean or "petrol" in s_clean or "oil" in s_clean or "transport" in s_clean or "maintenance" in s_clean:
+    if (
+        "fuel" in s_clean
+        or "petrol" in s_clean
+        or "oil" in s_clean
+        or "transport" in s_clean
+        or "maintenance" in s_clean
+    ):
         return "Transport & Fuel"
 
     return "Shopping & Miscellaneous"
+
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_data():
     conn = get_connection()
     df = pd.read_sql_query(
         "SELECT * FROM transactions WHERE deleted_at IS NULL OR deleted_at = '' ORDER BY t_date DESC, id DESC",
-        conn
+        conn,
     )
     if not USE_POSTGRES:
         conn.close()
@@ -1141,7 +1594,9 @@ def load_data():
         df["amount"] = df["amount"].astype(float)
         df["pending_loan"] = df["pending_loan"].fillna(0.0).astype(float)
         df["sub_category"] = df["sub_category"].fillna("Miscellaneous")
-        df["Loan_Category"] = df.apply(lambda r: infer_loan_category(r["sub_category"], r["category"]), axis=1)
+        df["Loan_Category"] = df.apply(
+            lambda r: infer_loan_category(r["sub_category"], r["category"]), axis=1
+        )
 
         df["Effective_Date"] = df.apply(get_effective_accounting_date, axis=1)
         df["Month_Key"] = df["Effective_Date"].dt.strftime("%Y-%m")
@@ -1151,19 +1606,30 @@ def load_data():
         df["Record_Label"] = df.apply(
             lambda r: (
                 f"#{int(r['id'])} | {r['t_date'].strftime('%Y-%m-%d')}"
-                + (f" ➡️ [{r['Effective_Date'].strftime('%b %Y')} Salary]" if r["Is_Shifted_Salary"] else "")
+                + (
+                    f" ➡️ [{r['Effective_Date'].strftime('%b %Y')} Salary]"
+                    if r["Is_Shifted_Salary"]
+                    else ""
+                )
                 + f" | [{r['bank']}] {r['sub_category']} | {format_inr(r['amount'], 0)}"
-                + (f" (Loan: {format_inr(r['pending_loan'], 0)})" if r["pending_loan"] > 0 else "")
+                + (
+                    f" (Loan: {format_inr(r['pending_loan'], 0)})"
+                    if r["pending_loan"] > 0
+                    else ""
+                )
                 + f" • {r['member']}"
             ),
-            axis=1
+            axis=1,
         )
     return df
+
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_recurring_bills():
     conn = get_connection()
-    r_df = pd.read_sql_query("SELECT * FROM recurring_bills ORDER BY due_day ASC, id ASC", conn)
+    r_df = pd.read_sql_query(
+        "SELECT * FROM recurring_bills ORDER BY due_day ASC, id ASC", conn
+    )
     if not USE_POSTGRES:
         conn.close()
     if not r_df.empty:
@@ -1172,8 +1638,13 @@ def load_recurring_bills():
         r_df["is_active"] = r_df["is_active"].fillna(1).astype(int)
     return r_df
 
+
 def compute_upcoming_status(recurring_df, trans_df, target_month_key):
-    if recurring_df is None or recurring_df.empty or "is_active" not in recurring_df.columns:
+    if (
+        recurring_df is None
+        or recurring_df.empty
+        or "is_active" not in recurring_df.columns
+    ):
         return pd.DataFrame()
 
     active_bills = recurring_df[recurring_df["is_active"] == 1].copy()
@@ -1183,14 +1654,17 @@ def compute_upcoming_status(recurring_df, trans_df, target_month_key):
     try:
         yr, mn = [int(x) for x in target_month_key.split("-")]
     except Exception:
-        yr, mn = date.today().year, date.today().month
+        yr, mn = today_ist().year, today_ist().month
 
     if not trans_df.empty:
-        m_exp = trans_df[(trans_df["Month_Key"] == target_month_key) & (trans_df["t_type"] == "Expense")]
+        m_exp = trans_df[
+            (trans_df["Month_Key"] == target_month_key)
+            & (trans_df["t_type"] == "Expense")
+        ]
     else:
         m_exp = pd.DataFrame()
 
-    today_dt = date.today()
+    today_dt = today_ist()
     rows = []
     for _, bill in active_bills.iterrows():
         sub_name = str(bill["sub_category"]).strip()
@@ -1209,7 +1683,9 @@ def compute_upcoming_status(recurring_df, trans_df, target_month_key):
             urgency_rank = 4
         else:
             if days_diff < 0:
-                status_badge = f"🔴 Overdue by {abs(days_diff)}d (Due {due_dt.strftime('%d %b')})"
+                status_badge = (
+                    f"🔴 Overdue by {abs(days_diff)}d (Due {due_dt.strftime('%d %b')})"
+                )
                 urgency_rank = 0
             elif days_diff == 0:
                 status_badge = f"🟠 Due Today! ({due_dt.strftime('%d %b')})"
@@ -1221,24 +1697,31 @@ def compute_upcoming_status(recurring_df, trans_df, target_month_key):
                 status_badge = f"🔵 Upcoming ({due_dt.strftime('%d %b')})"
                 urgency_rank = 3
 
-        rows.append({
-            "bill_id": int(bill["id"]),
-            "Pay_Now": not is_paid and urgency_rank <= 2,
-            "Status": status_badge,
-            "Urgency": urgency_rank,
-            "Is_Paid": is_paid,
-            "Due_Date": due_dt,
-            "Due_Day": int(bill["due_day"]),
-            "Bank": str(bill["bank"]),
-            "Category": str(bill["category"]),
-            "Sub-category": sub_name,
-            "Member": str(bill["member"]),
-            "Expected_Amount": float(bill["expected_amount"]),
-            "Paid_Amount": float(paid_amt),
-            "Details": str(bill["details"] or "Monthly Scheduled Bill")
-        })
+        rows.append(
+            {
+                "bill_id": int(bill["id"]),
+                "Pay_Now": not is_paid and urgency_rank <= 2,
+                "Status": status_badge,
+                "Urgency": urgency_rank,
+                "Is_Paid": is_paid,
+                "Due_Date": due_dt,
+                "Due_Day": int(bill["due_day"]),
+                "Bank": str(bill["bank"]),
+                "Category": str(bill["category"]),
+                "Sub-category": sub_name,
+                "Member": str(bill["member"]),
+                "Expected_Amount": float(bill["expected_amount"]),
+                "Paid_Amount": float(paid_amt),
+                "Details": str(bill["details"] or "Monthly Scheduled Bill"),
+            }
+        )
 
-    return pd.DataFrame(rows).sort_values(["Urgency", "Due_Day", "Sub-category"]).reset_index(drop=True)
+    return (
+        pd.DataFrame(rows)
+        .sort_values(["Urgency", "Due_Day", "Sub-category"])
+        .reset_index(drop=True)
+    )
+
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_recycle_bin():
@@ -1246,7 +1729,7 @@ def load_recycle_bin():
     purge_expired_recycle_bin(conn)
     bin_df = pd.read_sql_query(
         "SELECT * FROM transactions WHERE deleted_at IS NOT NULL AND deleted_at <> '' ORDER BY deleted_at DESC, id DESC",
-        conn
+        conn,
     )
     if not USE_POSTGRES:
         conn.close()
@@ -1257,7 +1740,7 @@ def load_recycle_bin():
         bin_df["amount"] = bin_df["amount"].astype(float)
         bin_df["pending_loan"] = bin_df["pending_loan"].fillna(0.0).astype(float)
         bin_df["deleted_dt"] = pd.to_datetime(bin_df["deleted_at"])
-        now_dt = datetime.now()
+        now_dt = now_ist()
 
         def calc_expiry_label(del_dt):
             expire_at = del_dt + timedelta(days=RECYCLE_BIN_RETENTION_DAYS)
@@ -1274,58 +1757,118 @@ def load_recycle_bin():
             lambda r: (
                 f"#{int(r['id'])} | {r['t_date'].strftime('%Y-%m-%d')} | [{r['bank']}] "
                 f"{r['sub_category']} | {format_inr(r['amount'], 0)}"
-                + (f" (Loan: {format_inr(r['pending_loan'], 0)})" if r["pending_loan"] > 0 else "")
+                + (
+                    f" (Loan: {format_inr(r['pending_loan'], 0)})"
+                    if r["pending_loan"] > 0
+                    else ""
+                )
                 + f" • {r['member']} ⏳ [{r['Auto_Clears_In']}]"
             ),
-            axis=1
+            axis=1,
         )
     return bin_df
+
 
 def clear_all_caches():
     load_data.clear()
     load_recycle_bin.clear()
     load_recurring_bills.clear()
-    st.session_state["last_sync_time"] = datetime.now().strftime("%I:%M:%S %p")
+    st.session_state["last_sync_time"] = format_ist_time()
     st.session_state["db_fingerprint"] = get_db_fingerprint()
 
-def add_transaction(t_date, bank, t_type, category, sub_category, member, amount, pending_loan, details):
+
+def add_transaction(
+    t_date, bank, t_type, category, sub_category, member, amount, pending_loan, details
+):
     conn = get_connection()
     c = conn.cursor()
     if USE_POSTGRES:
-        c.execute("""
+        c.execute(
+            """
             INSERT INTO transactions (t_date, bank, t_type, category, sub_category, member, amount, pending_loan, details, deleted_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
-        """, (t_date, bank, t_type, category, sub_category, member, amount, pending_loan, details))
+        """,
+            (
+                t_date,
+                bank,
+                t_type,
+                category,
+                sub_category,
+                member,
+                amount,
+                pending_loan,
+                details,
+            ),
+        )
     else:
-        c.execute("""
+        c.execute(
+            """
             INSERT INTO transactions (t_date, bank, t_type, category, sub_category, member, amount, pending_loan, details, deleted_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-        """, (str(t_date), bank, t_type, category, sub_category, member, amount, pending_loan, details))
+        """,
+            (
+                str(t_date),
+                bank,
+                t_type,
+                category,
+                sub_category,
+                member,
+                amount,
+                pending_loan,
+                details,
+            ),
+        )
     conn.commit()
     c.close()
     if not USE_POSTGRES:
         conn.close()
     clear_all_caches()
 
-def add_single_recurring_bill(sub_category, category, bank, member, expected_amount, due_day, details):
+
+def add_single_recurring_bill(
+    sub_category, category, bank, member, expected_amount, due_day, details
+):
     conn = get_connection()
     c = conn.cursor()
     d_day = min(max(1, int(due_day or 5)), 31)
     if USE_POSTGRES:
-        c.execute("""
+        c.execute(
+            """
             INSERT INTO recurring_bills (sub_category, category, bank, member, expected_amount, due_day, details, is_active)
             VALUES (%s, %s, %s, %s, %s, %s, %s, 1)
-        """, (sub_category, category, bank, member, float(expected_amount), d_day, details))
+        """,
+            (
+                sub_category,
+                category,
+                bank,
+                member,
+                float(expected_amount),
+                d_day,
+                details,
+            ),
+        )
     else:
-        c.execute("""
+        c.execute(
+            """
             INSERT INTO recurring_bills (sub_category, category, bank, member, expected_amount, due_day, details, is_active)
             VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-        """, (sub_category, category, bank, member, float(expected_amount), d_day, details))
+        """,
+            (
+                sub_category,
+                category,
+                bank,
+                member,
+                float(expected_amount),
+                d_day,
+                details,
+            ),
+        )
     conn.commit()
     c.close()
     if not USE_POSTGRES:
         conn.close()
     clear_all_caches()
+
 
 def bulk_add_transactions(records_list):
     if not records_list:
@@ -1333,20 +1876,30 @@ def bulk_add_transactions(records_list):
     conn = get_connection()
     c = conn.cursor()
     if USE_POSTGRES:
-        c.executemany("""
+        c.executemany(
+            """
             INSERT INTO transactions (t_date, bank, t_type, category, sub_category, member, amount, pending_loan, details, deleted_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
-        """, records_list)
+        """,
+            records_list,
+        )
     else:
-        c.executemany("""
+        c.executemany(
+            """
             INSERT INTO transactions (t_date, bank, t_type, category, sub_category, member, amount, pending_loan, details, deleted_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-        """, [(str(r[0]), r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8]) for r in records_list])
+        """,
+            [
+                (str(r[0]), r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8])
+                for r in records_list
+            ],
+        )
     conn.commit()
     c.close()
     if not USE_POSTGRES:
         conn.close()
     clear_all_caches()
+
 
 def save_recurring_templates(edited_df):
     conn = get_connection()
@@ -1357,7 +1910,9 @@ def save_recurring_templates(edited_df):
         sub_c = str(r.get("Sub-category") or "").strip()
         if not sub_c:
             continue
-        cat_c = str(r.get("Category") or infer_parent_category(sub_c, "Expense")).strip()
+        cat_c = str(
+            r.get("Category") or infer_parent_category(sub_c, "Expense")
+        ).strip()
         bnk = str(r.get("Bank") or "SBI").strip()
         mem = str(r.get("Member") or "Aditya Das").strip()
         exp_amt = float(r.get("Expected Amount (₹)") or 0.0)
@@ -1368,60 +1923,114 @@ def save_recurring_templates(edited_df):
 
     if rows_to_save:
         if USE_POSTGRES:
-            c.executemany("""
+            c.executemany(
+                """
                 INSERT INTO recurring_bills (sub_category, category, bank, member, expected_amount, due_day, details, is_active)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, rows_to_save)
+            """,
+                rows_to_save,
+            )
         else:
-            c.executemany("""
+            c.executemany(
+                """
                 INSERT INTO recurring_bills (sub_category, category, bank, member, expected_amount, due_day, details, is_active)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, rows_to_save)
+            """,
+                rows_to_save,
+            )
     conn.commit()
     c.close()
     if not USE_POSTGRES:
         conn.close()
     clear_all_caches()
 
-def update_transaction(t_id, t_date, bank, t_type, category, sub_category, member, amount, pending_loan, details):
+
+def update_transaction(
+    t_id,
+    t_date,
+    bank,
+    t_type,
+    category,
+    sub_category,
+    member,
+    amount,
+    pending_loan,
+    details,
+):
     conn = get_connection()
     c = conn.cursor()
     if USE_POSTGRES:
-        c.execute("""
+        c.execute(
+            """
             UPDATE transactions
             SET t_date = %s, bank = %s, t_type = %s, category = %s, sub_category = %s,
                 member = %s, amount = %s, pending_loan = %s, details = %s
             WHERE id = %s
-        """, (t_date, bank, t_type, category, sub_category, member, float(amount), float(pending_loan), details, int(t_id)))
+        """,
+            (
+                t_date,
+                bank,
+                t_type,
+                category,
+                sub_category,
+                member,
+                float(amount),
+                float(pending_loan),
+                details,
+                int(t_id),
+            ),
+        )
     else:
-        c.execute("""
+        c.execute(
+            """
             UPDATE transactions
             SET t_date = ?, bank = ?, t_type = ?, category = ?, sub_category = ?,
                 member = ?, amount = ?, pending_loan = ?, details = ?
             WHERE id = ?
-        """, (str(t_date), bank, t_type, category, sub_category, member, float(amount), float(pending_loan), details, int(t_id)))
+        """,
+            (
+                str(t_date),
+                bank,
+                t_type,
+                category,
+                sub_category,
+                member,
+                float(amount),
+                float(pending_loan),
+                details,
+                int(t_id),
+            ),
+        )
     conn.commit()
     c.close()
     if not USE_POSTGRES:
         conn.close()
     clear_all_caches()
 
+
 def soft_delete_transactions(t_ids):
     if not t_ids:
         return
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = now_ist().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_connection()
     c = conn.cursor()
     for t_id in t_ids:
         if USE_POSTGRES:
-            c.execute("UPDATE transactions SET deleted_at = %s WHERE id = %s", (now_str, int(t_id)))
+            c.execute(
+                "UPDATE transactions SET deleted_at = %s WHERE id = %s",
+                (now_str, int(t_id)),
+            )
         else:
-            c.execute("UPDATE transactions SET deleted_at = ? WHERE id = ?", (now_str, int(t_id)))
+            c.execute(
+                "UPDATE transactions SET deleted_at = ? WHERE id = ?",
+                (now_str, int(t_id)),
+            )
     conn.commit()
     c.close()
     if not USE_POSTGRES:
         conn.close()
     clear_all_caches()
+
 
 def restore_transactions(t_ids):
     if not t_ids:
@@ -1430,14 +2039,19 @@ def restore_transactions(t_ids):
     c = conn.cursor()
     for t_id in t_ids:
         if USE_POSTGRES:
-            c.execute("UPDATE transactions SET deleted_at = NULL WHERE id = %s", (int(t_id),))
+            c.execute(
+                "UPDATE transactions SET deleted_at = NULL WHERE id = %s", (int(t_id),)
+            )
         else:
-            c.execute("UPDATE transactions SET deleted_at = NULL WHERE id = ?", (int(t_id),))
+            c.execute(
+                "UPDATE transactions SET deleted_at = NULL WHERE id = ?", (int(t_id),)
+            )
     conn.commit()
     c.close()
     if not USE_POSTGRES:
         conn.close()
     clear_all_caches()
+
 
 def permanent_delete_transactions(t_ids):
     if not t_ids:
@@ -1455,9 +2069,10 @@ def permanent_delete_transactions(t_ids):
         conn.close()
     clear_all_caches()
 
-# Initialize session state sync tracking
+
+# Initialize session state sync tracking in IST
 if "last_sync_time" not in st.session_state:
-    st.session_state["last_sync_time"] = datetime.now().strftime("%I:%M:%S %p")
+    st.session_state["last_sync_time"] = format_ist_time()
 if "db_fingerprint" not in st.session_state:
     st.session_state["db_fingerprint"] = get_db_fingerprint()
 if "auto_sync_enabled" not in st.session_state:
@@ -1472,6 +2087,7 @@ recurring_df = load_recurring_bills()
 # 5B. ZERO-LAG BACKGROUND AUTO-REFRESH MONITOR
 # ==========================================
 if hasattr(st, "fragment"):
+
     @st.fragment(run_every=timedelta(seconds=AUTO_REFRESH_INTERVAL_SECONDS))
     def background_auto_sync_monitor():
         """
@@ -1485,7 +2101,9 @@ if hasattr(st, "fragment"):
         if new_fp and old_fp and new_fp != old_fp:
             clear_all_caches()
             st.rerun(scope="app")
+
 else:
+
     def background_auto_sync_monitor():
         pass
 
@@ -1515,7 +2133,7 @@ def open_upcoming_bills_modal(default_month_key=None):
             use_container_width=True,
             key="btn_toggle_sched_form",
             on_click=_toggle_upcoming_top_mode,
-            args=("schedule",)
+            args=("schedule",),
         )
     with top_b2:
         st.button(
@@ -1524,18 +2142,24 @@ def open_upcoming_bills_modal(default_month_key=None):
             use_container_width=True,
             key="btn_toggle_manual_form",
             on_click=_toggle_upcoming_top_mode,
-            args=("manual",)
+            args=("manual",),
         )
 
     # FORM A: FILL MANUAL EXPENSE DETAILS DIRECTLY
     if st.session_state["up_top_mode"] == "manual":
         with st.container(border=True):
             st.markdown("##### ✍️ Fill Manual Transaction Details")
-            man_type = button_selector("Transaction Type", ["Expense", "Income", "Self Transfer"], key="man_up_type")
+            man_type = button_selector(
+                "Transaction Type",
+                ["Expense", "Income", "Self Transfer"],
+                key="man_up_type",
+            )
             m_c1, m_c2 = st.columns(2)
             with m_c1:
                 man_cat_map = get_category_map_for_type(man_type)
-                man_cat = st.selectbox("Category", list(man_cat_map.keys()), key="man_up_cat")
+                man_cat = st.selectbox(
+                    "Category", list(man_cat_map.keys()), key="man_up_cat"
+                )
             with m_c2:
                 man_bank = st.selectbox("Bank Account", BANK_OPTIONS, key="man_up_bank")
 
@@ -1544,42 +2168,98 @@ def open_upcoming_bills_modal(default_month_key=None):
 
             man_custom_sub = ""
             if man_sub_sel == "➕ Custom Sub-category...":
-                man_custom_sub = st.text_input("Enter Custom Sub-category Name", placeholder="e.g., Water Bill / Plumber / Repair", key="man_up_cust")
+                man_custom_sub = st.text_input(
+                    "Enter Custom Sub-category Name",
+                    placeholder="e.g., Water Bill / Plumber / Repair",
+                    key="man_up_cust",
+                )
 
             m_c3, m_c4 = st.columns(2)
             with m_c3:
-                man_date = st.date_input("Date", date.today(), key="man_up_dt")
-                man_amt = st.number_input("Amount (₹)", min_value=0.0, value=None, placeholder="Tap to type amount", step=100.0, key="man_up_amt")
+                man_date = st.date_input("Date", today_ist(), key="man_up_dt")
+                man_amt = st.number_input(
+                    "Amount (₹)",
+                    min_value=0.0,
+                    value=None,
+                    placeholder="Tap to type amount",
+                    step=100.0,
+                    key="man_up_amt",
+                )
             with m_c4:
-                man_mem_list = EARNING_MEMBERS if man_type == "Income" else EXPENSE_MEMBERS
-                man_mem = st.selectbox("Member", man_mem_list, index=2, key="man_up_mem")
-                man_loan = st.number_input("Pending Loan (₹) [Optional]", min_value=0.0, value=None, placeholder="0.00", step=500.0, key="man_up_loan")
+                man_mem_list = (
+                    EARNING_MEMBERS if man_type == "Income" else EXPENSE_MEMBERS
+                )
+                man_mem = st.selectbox(
+                    "Member", man_mem_list, index=2, key="man_up_mem"
+                )
+                man_loan = st.number_input(
+                    "Pending Loan (₹) [Optional]",
+                    min_value=0.0,
+                    value=None,
+                    placeholder="0.00",
+                    step=500.0,
+                    key="man_up_loan",
+                )
 
-            man_details = st.text_input("Manual Details / Notes", placeholder="Type full transaction details...", key="man_up_det")
-            man_also_repeat = st.checkbox("⏰ Also save to monthly recurring checklist?", value=False, key="man_up_rep")
+            man_details = st.text_input(
+                "Manual Details / Notes",
+                placeholder="Type full transaction details...",
+                key="man_up_det",
+            )
+            man_also_repeat = st.checkbox(
+                "⏰ Also save to monthly recurring checklist?",
+                value=False,
+                key="man_up_rep",
+            )
 
             s_col1, s_col2 = st.columns([3, 1])
             with s_col1:
-                if st.button("💾 Save Manual Transaction", type="primary", use_container_width=True, key="man_up_save_btn"):
-                    final_m_sub = man_custom_sub.strip() if man_sub_sel == "➕ Custom Sub-category..." else man_sub_sel
+                if st.button(
+                    "💾 Save Manual Transaction",
+                    type="primary",
+                    use_container_width=True,
+                    key="man_up_save_btn",
+                ):
+                    final_m_sub = (
+                        man_custom_sub.strip()
+                        if man_sub_sel == "➕ Custom Sub-category..."
+                        else man_sub_sel
+                    )
                     clean_m_amt = float(man_amt) if man_amt is not None else 0.0
                     clean_m_loan = float(man_loan) if man_loan is not None else 0.0
                     if not final_m_sub:
                         final_m_sub = "Miscellaneous"
                     if clean_m_amt <= 0 and clean_m_loan <= 0:
-                        st.error("⚠️ Please enter an Amount or Pending Loan greater than ₹0.")
+                        st.error(
+                            "⚠️ Please enter an Amount or Pending Loan greater than ₹0."
+                        )
                     else:
                         add_transaction(
-                            man_date, man_bank, man_type, man_cat, final_m_sub,
-                            man_mem, clean_m_amt, clean_m_loan, man_details.strip()
+                            man_date,
+                            man_bank,
+                            man_type,
+                            man_cat,
+                            final_m_sub,
+                            man_mem,
+                            clean_m_amt,
+                            clean_m_loan,
+                            man_details.strip(),
                         )
                         if man_also_repeat and man_type == "Expense":
                             add_single_recurring_bill(
-                                final_m_sub, man_cat, man_bank, man_mem,
-                                clean_m_amt, int(man_date.day), man_details.strip() or "Scheduled Monthly Expense"
+                                final_m_sub,
+                                man_cat,
+                                man_bank,
+                                man_mem,
+                                clean_m_amt,
+                                int(man_date.day),
+                                man_details.strip() or "Scheduled Monthly Expense",
                             )
                         st.session_state["up_top_mode"] = None
-                        st.toast(f"✅ Saved {final_m_sub}: {format_inr(clean_m_amt, 2)}", icon="💰")
+                        st.toast(
+                            f"✅ Saved {final_m_sub}: {format_inr(clean_m_amt, 2)}",
+                            icon="💰",
+                        )
                         st.rerun()
             with s_col2:
                 st.button(
@@ -1587,7 +2267,7 @@ def open_upcoming_bills_modal(default_month_key=None):
                     use_container_width=True,
                     key="man_up_close_btn",
                     on_click=_toggle_upcoming_top_mode,
-                    args=("manual",)
+                    args=("manual",),
                 )
 
     # FORM B: ADD NEW SCHEDULED BILL TEMPLATE
@@ -1596,38 +2276,68 @@ def open_upcoming_bills_modal(default_month_key=None):
             st.markdown("##### ➕ Add New Scheduled Monthly Bill Template")
             ns_c1, ns_c2 = st.columns(2)
             with ns_c1:
-                ns_cat = st.selectbox("Category", list(EXPENSE_CATEGORY_MAP.keys()), key="ns_cat_sel")
+                ns_cat = st.selectbox(
+                    "Category", list(EXPENSE_CATEGORY_MAP.keys()), key="ns_cat_sel"
+                )
                 ns_bank = st.selectbox("Default Bank", BANK_OPTIONS, key="ns_bank_sel")
             with ns_c2:
-                ns_sub_opts = EXPENSE_CATEGORY_MAP[ns_cat] + ["➕ Custom Bill / Sub-category..."]
-                ns_sub_sel = st.selectbox("Bill / Sub-category", ns_sub_opts, key="ns_sub_sel")
-                ns_member = st.selectbox("Paid By Member", EXPENSE_MEMBERS, index=2, key="ns_mem_sel")
+                ns_sub_opts = EXPENSE_CATEGORY_MAP[ns_cat] + [
+                    "➕ Custom Bill / Sub-category..."
+                ]
+                ns_sub_sel = st.selectbox(
+                    "Bill / Sub-category", ns_sub_opts, key="ns_sub_sel"
+                )
+                ns_member = st.selectbox(
+                    "Paid By Member", EXPENSE_MEMBERS, index=2, key="ns_mem_sel"
+                )
 
             ns_custom_sub = ""
             if ns_sub_sel == "➕ Custom Bill / Sub-category...":
-                ns_custom_sub = st.text_input("Enter Custom Bill Name", placeholder="e.g., Broadband / Maid / Gym Fee", key="ns_cust_txt")
+                ns_custom_sub = st.text_input(
+                    "Enter Custom Bill Name",
+                    placeholder="e.g., Broadband / Maid / Gym Fee",
+                    key="ns_cust_txt",
+                )
 
             ns_c3, ns_c4 = st.columns(2)
             with ns_c3:
                 ns_amount = st.number_input(
                     "Expected Monthly Amount (₹) [Can vary]",
-                    min_value=0.0, value=None,
-                    placeholder="e.g., 6000", step=100.0,
-                    key="ns_amt_inp"
+                    min_value=0.0,
+                    value=None,
+                    placeholder="e.g., 6000",
+                    step=100.0,
+                    key="ns_amt_inp",
                 )
             with ns_c4:
                 ns_due_day = st.number_input(
                     "Monthly Due Day (1 to 31)",
-                    min_value=1, max_value=31, value=5, step=1,
-                    key="ns_day_inp"
+                    min_value=1,
+                    max_value=31,
+                    value=5,
+                    step=1,
+                    key="ns_day_inp",
                 )
 
-            ns_details = st.text_input("Default Reminder Note", placeholder="e.g., Pay before 10th of every month", key="ns_det_inp")
+            ns_details = st.text_input(
+                "Default Reminder Note",
+                placeholder="e.g., Pay before 10th of every month",
+                key="ns_det_inp",
+            )
 
             sb_col1, sb_col2 = st.columns([3, 1])
             with sb_col1:
-                if st.button("💾 Save to Scheduled List", type="primary", use_container_width=True, key="btn_save_new_sched"):
-                    final_ns_sub = ns_custom_sub.strip() if ns_sub_sel == "➕ Custom Bill / Sub-category..." else ns_sub_sel
+                if st.button(
+                    "💾 Save to Scheduled List",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_save_new_sched",
+                ):
+                    final_ns_sub = (
+                        ns_custom_sub.strip()
+                        if ns_sub_sel == "➕ Custom Bill / Sub-category..."
+                        else ns_sub_sel
+                    )
                     clean_ns_amt = float(ns_amount) if ns_amount is not None else 0.0
                     if not final_ns_sub:
                         st.error("⚠️ Please enter a valid Bill / Sub-category name.")
@@ -1635,11 +2345,18 @@ def open_upcoming_bills_modal(default_month_key=None):
                         st.error("⚠️ Please enter an Expected Amount greater than ₹0.")
                     else:
                         add_single_recurring_bill(
-                            final_ns_sub, ns_cat, ns_bank, ns_member,
-                            clean_ns_amt, int(ns_due_day), ns_details.strip() or "Scheduled Monthly Expense"
+                            final_ns_sub,
+                            ns_cat,
+                            ns_bank,
+                            ns_member,
+                            clean_ns_amt,
+                            int(ns_due_day),
+                            ns_details.strip() or "Scheduled Monthly Expense",
                         )
                         st.session_state["up_top_mode"] = None
-                        st.toast(f"✅ Added '{final_ns_sub}' to Scheduled Bills!", icon="⏰")
+                        st.toast(
+                            f"✅ Added '{final_ns_sub}' to Scheduled Bills!", icon="⏰"
+                        )
                         st.rerun()
             with sb_col2:
                 st.button(
@@ -1647,27 +2364,50 @@ def open_upcoming_bills_modal(default_month_key=None):
                     use_container_width=True,
                     key="sched_up_close_btn",
                     on_click=_toggle_upcoming_top_mode,
-                    args=("schedule",)
+                    args=("schedule",),
                 )
 
-    up_tab1, up_tab2 = st.tabs(["🔔 Due / Upcoming This Month", "⚙️ Edit All Scheduled Templates"])
+    up_tab1, up_tab2 = st.tabs(
+        ["🔔 Due / Upcoming This Month", "⚙️ Edit All Scheduled Templates"]
+    )
 
     with up_tab1:
-        cur_m_key = date.today().strftime("%Y-%m")
-        avail_m_keys = sorted(list(set([cur_m_key] + (list(df["Month_Key"].unique()) if not df.empty else []))), reverse=True)
-        default_idx = avail_m_keys.index(default_month_key) if default_month_key in avail_m_keys else 0
+        cur_m_key = today_ist().strftime("%Y-%m")
+        avail_m_keys = sorted(
+            list(
+                set(
+                    [cur_m_key]
+                    + (list(df["Month_Key"].unique()) if not df.empty else [])
+                )
+            ),
+            reverse=True,
+        )
+        default_idx = (
+            avail_m_keys.index(default_month_key)
+            if default_month_key in avail_m_keys
+            else 0
+        )
 
         u_col1, u_col2 = st.columns(2)
         with u_col1:
-            sel_m_key = st.selectbox("🗓️ Target Budget Month", avail_m_keys, index=default_idx, key="up_modal_mkey")
+            sel_m_key = st.selectbox(
+                "🗓️ Target Budget Month",
+                avail_m_keys,
+                index=default_idx,
+                key="up_modal_mkey",
+            )
         with u_col2:
-            pay_date_default = st.date_input("📅 Default Payment Date", date.today(), key="up_pay_dt")
+            pay_date_default = st.date_input(
+                "📅 Default Payment Date", today_ist(), key="up_pay_dt"
+            )
 
         inject_mobile_ux_fixes_js()
 
         status_df = compute_upcoming_status(recurring_df, df, sel_m_key)
         if status_df.empty:
-            st.info("No scheduled transactions yet. Tap **➕ Add Scheduled Bill Template** above to add one!")
+            st.info(
+                "No scheduled transactions yet. Tap **➕ Add Scheduled Bill Template** above to add one!"
+            )
         else:
             unpaid_df = status_df[~status_df["Is_Paid"]].copy()
             paid_df = status_df[status_df["Is_Paid"]].copy()
@@ -1679,10 +2419,16 @@ def open_upcoming_bills_modal(default_month_key=None):
             )
 
             if unpaid_df.empty:
-                st.success(f"🎉 All scheduled transactions for **{sel_m_key}** are paid and logged!")
+                st.success(
+                    f"🎉 All scheduled transactions for **{sel_m_key}** are paid and logged!"
+                )
             else:
-                st.markdown("##### ⚡ Quick Add Scheduled Bill (or Edit Details Manually)")
-                st.caption("Edit the **Amount**, **Bank**, or **Details/Notes** for any bill below, then tap **➕ Add**:")
+                st.markdown(
+                    "##### ⚡ Quick Add Scheduled Bill (or Edit Details Manually)"
+                )
+                st.caption(
+                    "Edit the **Amount**, **Bank**, or **Details/Notes** for any bill below, then tap **➕ Add**:"
+                )
 
                 # SYMMETRIC 4-TIER SCHEDULED BILL CARDS
                 for _, bill_row in unpaid_df.iterrows():
@@ -1693,12 +2439,12 @@ def open_upcoming_bills_modal(default_month_key=None):
                             f'<span style="font-size:1.02rem; font-weight:700;">{html_lib.escape(str(bill_row["Sub-category"]))}</span>'
                             f'<span style="font-size:0.75rem; font-weight:600; background:rgba(128,128,128,0.16); padding:3px 10px; border-radius:20px; white-space:nowrap;">'
                             f'{html_lib.escape(str(bill_row["Status"]))}'
-                            f'</span>'
-                            f'</div>'
+                            f"</span>"
+                            f"</div>"
                             f'<div style="font-size:0.78rem; color:#9ca3af; margin-bottom:10px;">'
                             f'📂 {html_lib.escape(str(bill_row["Category"]))} &nbsp;•&nbsp; 👨‍👩‍👦 {html_lib.escape(str(bill_row["Member"]))}'
-                            f'</div>',
-                            unsafe_allow_html=True
+                            f"</div>",
+                            unsafe_allow_html=True,
                         )
 
                         in_c1, in_c2 = st.columns(2)
@@ -1709,15 +2455,19 @@ def open_upcoming_bills_modal(default_month_key=None):
                                 value=float(bill_row["Expected_Amount"]),
                                 step=100.0,
                                 format="%.2f",
-                                key=f"quick_amt_{sel_m_key}_{b_id}"
+                                key=f"quick_amt_{sel_m_key}_{b_id}",
                             )
                         with in_c2:
-                            bnk_idx = BANK_OPTIONS.index(bill_row["Bank"]) if bill_row["Bank"] in BANK_OPTIONS else 0
+                            bnk_idx = (
+                                BANK_OPTIONS.index(bill_row["Bank"])
+                                if bill_row["Bank"] in BANK_OPTIONS
+                                else 0
+                            )
                             actual_bnk = st.selectbox(
                                 "Bank Account",
                                 BANK_OPTIONS,
                                 index=bnk_idx,
-                                key=f"quick_bnk_{sel_m_key}_{b_id}"
+                                key=f"quick_bnk_{sel_m_key}_{b_id}",
                             )
 
                         manual_note = st.text_input(
@@ -1725,14 +2475,14 @@ def open_upcoming_bills_modal(default_month_key=None):
                             value=str(bill_row["Details"]),
                             placeholder="Edit manual details / note...",
                             key=f"quick_det_{sel_m_key}_{b_id}",
-                            label_visibility="collapsed"
+                            label_visibility="collapsed",
                         )
 
                         if st.button(
                             f"➕ Add {bill_row['Sub-category']} ({format_inr(actual_amt or 0)}) to Expenses",
                             key=f"quick_btn_{sel_m_key}_{b_id}",
                             type="primary",
-                            use_container_width=True
+                            use_container_width=True,
                         ):
                             if (actual_amt or 0.0) <= 0:
                                 st.error("Enter amount > ₹0")
@@ -1746,45 +2496,66 @@ def open_upcoming_bills_modal(default_month_key=None):
                                     bill_row["Member"],
                                     float(actual_amt),
                                     0.0,
-                                    manual_note.strip() or bill_row["Details"]
+                                    manual_note.strip() or bill_row["Details"],
                                 )
                                 st.toast(
                                     f"✅ Added {bill_row['Sub-category']} ({format_inr(actual_amt)}) to Expenses!",
-                                    icon="💰"
+                                    icon="💰",
                                 )
                                 st.rerun()
 
-                with st.expander("📋 Or Bulk-Select & Add Multiple Scheduled Bills at Once", expanded=False):
-                    editor_input_df = pd.DataFrame({
-                        "Pay?": True,
-                        "Status": unpaid_df["Status"],
-                        "Payment Date": [pay_date_default for _ in range(len(unpaid_df))],
-                        "Bank": unpaid_df["Bank"],
-                        "Sub-category": unpaid_df["Sub-category"],
-                        "Category": unpaid_df["Category"],
-                        "Member": unpaid_df["Member"],
-                        "Amount to Pay (₹)": unpaid_df["Expected_Amount"],
-                        "Pending Loan (₹)": 0.0,
-                        "Details": unpaid_df["Details"]
-                    })
+                with st.expander(
+                    "📋 Or Bulk-Select & Add Multiple Scheduled Bills at Once",
+                    expanded=False,
+                ):
+                    editor_input_df = pd.DataFrame(
+                        {
+                            "Pay?": True,
+                            "Status": unpaid_df["Status"],
+                            "Payment Date": [
+                                pay_date_default for _ in range(len(unpaid_df))
+                            ],
+                            "Bank": unpaid_df["Bank"],
+                            "Sub-category": unpaid_df["Sub-category"],
+                            "Category": unpaid_df["Category"],
+                            "Member": unpaid_df["Member"],
+                            "Amount to Pay (₹)": unpaid_df["Expected_Amount"],
+                            "Pending Loan (₹)": 0.0,
+                            "Details": unpaid_df["Details"],
+                        }
+                    )
 
                     edited_pay_df = st.data_editor(
                         editor_input_df,
                         hide_index=True,
                         use_container_width=True,
                         column_config={
-                            "Pay?": st.column_config.CheckboxColumn("Pay?", default=True),
-                            "Status": st.column_config.TextColumn("Reminder", disabled=True),
+                            "Pay?": st.column_config.CheckboxColumn(
+                                "Pay?", default=True
+                            ),
+                            "Status": st.column_config.TextColumn(
+                                "Reminder", disabled=True
+                            ),
                             "Payment Date": st.column_config.DateColumn("Date"),
-                            "Bank": st.column_config.SelectboxColumn("Bank", options=BANK_OPTIONS),
+                            "Bank": st.column_config.SelectboxColumn(
+                                "Bank", options=BANK_OPTIONS
+                            ),
                             "Sub-category": st.column_config.TextColumn("Sub-category"),
-                            "Category": st.column_config.SelectboxColumn("Category", options=list(EXPENSE_CATEGORY_MAP.keys())),
-                            "Member": st.column_config.SelectboxColumn("Member", options=EXPENSE_MEMBERS),
-                            "Amount to Pay (₹)": st.column_config.NumberColumn("Actual Amount (₹)", min_value=0.0, format="%.2f"),
-                            "Pending Loan (₹)": st.column_config.NumberColumn("Pending Loan (₹)", min_value=0.0, format="%.2f"),
-                            "Details": st.column_config.TextColumn("Details")
+                            "Category": st.column_config.SelectboxColumn(
+                                "Category", options=list(EXPENSE_CATEGORY_MAP.keys())
+                            ),
+                            "Member": st.column_config.SelectboxColumn(
+                                "Member", options=EXPENSE_MEMBERS
+                            ),
+                            "Amount to Pay (₹)": st.column_config.NumberColumn(
+                                "Actual Amount (₹)", min_value=0.0, format="%.2f"
+                            ),
+                            "Pending Loan (₹)": st.column_config.NumberColumn(
+                                "Pending Loan (₹)", min_value=0.0, format="%.2f"
+                            ),
+                            "Details": st.column_config.TextColumn("Details"),
                         },
-                        key="up_pay_editor"
+                        key="up_pay_editor",
                     )
 
                     checked_to_pay = edited_pay_df[edited_pay_df["Pay?"] == True]
@@ -1793,7 +2564,7 @@ def open_upcoming_bills_modal(default_month_key=None):
                     if st.button(
                         f"✅ Add All {len(checked_to_pay)} Checked Bills ({format_inr(total_now)}) to Expenses",
                         type="primary",
-                        use_container_width=True
+                        use_container_width=True,
                     ):
                         if not checked_to_pay.empty:
                             new_exp_records = [
@@ -1806,20 +2577,44 @@ def open_upcoming_bills_modal(default_month_key=None):
                                     str(row["Member"]).strip(),
                                     float(row["Amount to Pay (₹)"] or 0.0),
                                     float(row["Pending Loan (₹)"] or 0.0),
-                                    str(row["Details"] or "").strip()
+                                    str(row["Details"] or "").strip(),
                                 )
                                 for _, row in checked_to_pay.iterrows()
                                 if float(row["Amount to Pay (₹)"] or 0.0) > 0
                             ]
                             bulk_add_transactions(new_exp_records)
-                            st.toast(f"🎉 Added {len(new_exp_records)} bills to Expenses!", icon="✅")
+                            st.toast(
+                                f"🎉 Added {len(new_exp_records)} bills to Expenses!",
+                                icon="✅",
+                            )
                             st.rerun()
 
             if not paid_df.empty:
-                with st.expander(f"✅ Already Paid in {sel_m_key} ({len(paid_df)} Bills)", expanded=False):
-                    paid_disp = paid_df[["Sub-category", "Category", "Bank", "Member", "Paid_Amount", "Status"]].copy()
-                    paid_disp["Paid_Amount"] = paid_disp["Paid_Amount"].apply(format_inr)
-                    paid_disp.columns = ["Sub-category", "Category", "Bank", "Member", "Paid Amount", "Status"]
+                with st.expander(
+                    f"✅ Already Paid in {sel_m_key} ({len(paid_df)} Bills)",
+                    expanded=False,
+                ):
+                    paid_disp = paid_df[
+                        [
+                            "Sub-category",
+                            "Category",
+                            "Bank",
+                            "Member",
+                            "Paid_Amount",
+                            "Status",
+                        ]
+                    ].copy()
+                    paid_disp["Paid_Amount"] = paid_disp["Paid_Amount"].apply(
+                        format_inr
+                    )
+                    paid_disp.columns = [
+                        "Sub-category",
+                        "Category",
+                        "Bank",
+                        "Member",
+                        "Paid Amount",
+                        "Status",
+                    ]
 
                     paid_cards = []
                     for _, pr in paid_df.iterrows():
@@ -1828,13 +2623,13 @@ def open_upcoming_bills_modal(default_month_key=None):
                             f'<div class="hist-card-top">'
                             f'<div class="hist-subcat">{html_lib.escape(str(pr["Sub-category"]))}</div>'
                             f'<div class="hist-amt" style="color:#2ecc71;">✅ {format_inr(pr["Paid_Amount"])}</div>'
-                            f'</div>'
+                            f"</div>"
                             f'<div class="hist-badges">'
                             f'<span class="hist-pill">🏦 {html_lib.escape(str(pr["Bank"]))}</span>'
                             f'<span class="hist-pill">👨‍👩‍👦 {html_lib.escape(str(pr["Member"]))}</span>'
                             f'<span class="hist-pill">📂 {html_lib.escape(str(pr["Category"]))}</span>'
-                            f'</div>'
-                            f'</div>'
+                            f"</div>"
+                            f"</div>"
                         )
                     render_responsive_table_or_cards(paid_disp, paid_cards)
 
@@ -1842,16 +2637,18 @@ def open_upcoming_bills_modal(default_month_key=None):
         st.caption(
             "Edit expected amounts, change due days, or uncheck 'Active?' to disable any scheduled reminder."
         )
-        tmpl_df = pd.DataFrame({
-            "Active": recurring_df["is_active"] == 1,
-            "Sub-category": recurring_df["sub_category"],
-            "Category": recurring_df["category"],
-            "Bank": recurring_df["bank"],
-            "Member": recurring_df["member"],
-            "Expected Amount (₹)": recurring_df["expected_amount"],
-            "Due Day (1-31)": recurring_df["due_day"],
-            "Details": recurring_df["details"].fillna("")
-        })
+        tmpl_df = pd.DataFrame(
+            {
+                "Active": recurring_df["is_active"] == 1,
+                "Sub-category": recurring_df["sub_category"],
+                "Category": recurring_df["category"],
+                "Bank": recurring_df["bank"],
+                "Member": recurring_df["member"],
+                "Expected Amount (₹)": recurring_df["expected_amount"],
+                "Due Day (1-31)": recurring_df["due_day"],
+                "Details": recurring_df["details"].fillna(""),
+            }
+        )
 
         edited_tmpl_df = st.data_editor(
             tmpl_df,
@@ -1860,24 +2657,37 @@ def open_upcoming_bills_modal(default_month_key=None):
             use_container_width=True,
             column_config={
                 "Active": st.column_config.CheckboxColumn("Active?", default=True),
-                "Sub-category": st.column_config.TextColumn("Bill / Sub-category *", required=True),
-                "Category": st.column_config.SelectboxColumn(
-                    "Category", options=list(EXPENSE_CATEGORY_MAP.keys()), default="Utilities & Bills"
+                "Sub-category": st.column_config.TextColumn(
+                    "Bill / Sub-category *", required=True
                 ),
-                "Bank": st.column_config.SelectboxColumn("Default Bank", options=BANK_OPTIONS, default="SBI"),
-                "Member": st.column_config.SelectboxColumn("Member", options=EXPENSE_MEMBERS, default="Aditya Das"),
+                "Category": st.column_config.SelectboxColumn(
+                    "Category",
+                    options=list(EXPENSE_CATEGORY_MAP.keys()),
+                    default="Utilities & Bills",
+                ),
+                "Bank": st.column_config.SelectboxColumn(
+                    "Default Bank", options=BANK_OPTIONS, default="SBI"
+                ),
+                "Member": st.column_config.SelectboxColumn(
+                    "Member", options=EXPENSE_MEMBERS, default="Aditya Das"
+                ),
                 "Expected Amount (₹)": st.column_config.NumberColumn(
-                    "Approx / Expected (₹)", min_value=0.0, format="%.2f", default=1000.0
+                    "Approx / Expected (₹)",
+                    min_value=0.0,
+                    format="%.2f",
+                    default=1000.0,
                 ),
                 "Due Day (1-31)": st.column_config.NumberColumn(
                     "Due Day (1-31)", min_value=1, max_value=31, step=1, default=5
                 ),
-                "Details": st.column_config.TextColumn("Default Note")
+                "Details": st.column_config.TextColumn("Default Note"),
             },
-            key="recurring_template_editor"
+            key="recurring_template_editor",
         )
 
-        if st.button("💾 Save Changes to Templates", type="primary", use_container_width=True):
+        if st.button(
+            "💾 Save Changes to Templates", type="primary", use_container_width=True
+        ):
             save_recurring_templates(edited_tmpl_df)
             st.toast("✅ Saved scheduled bill templates!", icon="⏰")
             st.rerun()
@@ -1886,26 +2696,31 @@ def open_upcoming_bills_modal(default_month_key=None):
 @st.dialog("🔍 Fullscreen Interactive Chart View", width="large")
 def open_chart_popup_modal(fig_json_str, chart_title, summary_df=None):
     st.markdown(f"#### {chart_title}")
-    st.caption("💡 Tap legend items below the chart to hide/isolate slices, or pinch to zoom.")
+    st.caption(
+        "💡 Tap legend items below the chart to hide/isolate bars & slices, or pinch to zoom."
+    )
     popup_fig = pio.from_json(fig_json_str)
     popup_fig.update_layout(
         height=POPUP_CHART_HEIGHT,
-        margin=dict(t=25, b=90, l=15, r=15),
+        margin=dict(t=35, b=90, l=20, r=75),
         showlegend=True,
         legend=dict(
             orientation="h",
             yanchor="top",
-            y=-0.08,
+            y=-0.12,
             xanchor="center",
             x=0.5,
-            font=dict(size=12)
+            font=dict(size=12),
         ),
-        font=dict(size=13)
+        font=dict(size=13),
     )
     for trace in popup_fig.data:
         if trace.type == "pie":
             trace.textposition = "inside"
             trace.textinfo = "percent+label"
+        elif trace.type == "bar":
+            trace.cliponaxis = False
+            trace.textfont = dict(size=12)
     st.plotly_chart(popup_fig, use_container_width=True, config=PLOTLY_POPUP_CONFIG)
 
     if summary_df is not None and not summary_df.empty:
@@ -1917,38 +2732,47 @@ def open_chart_popup_modal(fig_json_str, chart_title, summary_df=None):
                 val_txt = html_lib.escape(str(sr[cols_list[-1]]))
                 mid_pill = (
                     f'<div class="hist-badges"><span class="hist-pill">📂 {html_lib.escape(str(sr[cols_list[1]]))}</span></div>'
-                    if len(cols_list) > 2 else ""
+                    if len(cols_list) > 2
+                    else ""
                 )
                 popup_cards.append(
                     f'<div class="hist-card">'
                     f'<div class="hist-card-top">'
                     f'<div class="hist-subcat">{title_txt}</div>'
                     f'<div class="hist-amt" style="color:#2ecc71;">{val_txt}</div>'
-                    f'</div>'
-                    f'{mid_pill}'
-                    f'</div>'
+                    f"</div>"
+                    f"{mid_pill}"
+                    f"</div>"
                 )
             render_responsive_table_or_cards(summary_df, popup_cards)
 
 
-def render_chart_with_popup(title, fig, key_suffix, summary_df=None, show_inline_legend=False):
+def render_chart_with_popup(
+    title, fig, key_suffix, summary_df=None, show_inline_legend=False
+):
     hdr_c1, hdr_c2 = st.columns([3, 1])
     with hdr_c1:
         st.markdown(f"**{title}**")
     with hdr_c2:
-        if st.button("🔍 Enlarge", key=f"enlarge_{key_suffix}", use_container_width=True):
+        if st.button(
+            "🔍 Enlarge", key=f"enlarge_{key_suffix}", use_container_width=True
+        ):
             open_chart_popup_modal(fig.to_json(), title, summary_df)
     st.plotly_chart(
         style_compact_chart(fig, show_legend=show_inline_legend),
         use_container_width=True,
         config=PLOTLY_MOBILE_CONFIG,
-        key=f"plot_{key_suffix}"
+        key=f"plot_{key_suffix}",
     )
 
 
 @st.dialog("➕ Add New Expense / Income / Transfer", width="large")
 def open_add_modal():
-    t_type = button_selector("Transaction Type", ["Expense", "Income", "Self Transfer"], key="add_modal_t_type")
+    t_type = button_selector(
+        "Transaction Type",
+        ["Expense", "Income", "Self Transfer"],
+        key="add_modal_t_type",
+    )
 
     cat_col1, cat_col2, cat_col3 = st.columns(3)
     with cat_col1:
@@ -1962,12 +2786,18 @@ def open_add_modal():
 
     custom_sub = ""
     if selected_sub == "➕ Custom Sub-category...":
-        custom_sub = st.text_input("Enter Custom Sub-category", placeholder="e.g., Car Loan")
+        custom_sub = st.text_input(
+            "Enter Custom Sub-category", placeholder="e.g., Car Loan"
+        )
 
     f_col1, f_col2 = st.columns(2)
     with f_col1:
-        t_date = st.date_input("Date", date.today())
-        if t_type == "Income" and selected_sub == "Monthly Salary" and t_date.day >= SALARY_CUTOFF_DAY:
+        t_date = st.date_input("Date", today_ist())
+        if (
+            t_type == "Income"
+            and selected_sub == "Monthly Salary"
+            and t_date.day >= SALARY_CUTOFF_DAY
+        ):
             next_m = (t_date.replace(day=28) + timedelta(days=10)).strftime("%B %Y")
             st.caption(f"📅 **End-of-Month Salary:** Counts toward **{next_m}**!")
     with f_col2:
@@ -1980,45 +2810,66 @@ def open_add_modal():
     with a_col1:
         amount = st.number_input(
             "Amount (₹)",
-            min_value=0.0, value=None,
-            placeholder="Tap to type (e.g., 1500)", step=100.0,
-            key="add_amount_input"
+            min_value=0.0,
+            value=None,
+            placeholder="Tap to type (e.g., 1500)",
+            step=100.0,
+            key="add_amount_input",
         )
         if amount and amount > 0:
-            st.caption(f"🇮🇳 **{format_inr(amount)}** — *{number_to_indian_words(amount)}*")
+            st.caption(
+                f"🇮🇳 **{format_inr(amount)}** — *{number_to_indian_words(amount)}*"
+            )
 
     with a_col2:
         if t_type == "Expense":
             pending_loan = st.number_input(
                 "Pending Loan Balance (₹) [Optional]",
-                min_value=0.0, value=None,
-                placeholder="Tap if Loan (e.g., 318885)", step=500.0,
-                key="add_loan_input"
+                min_value=0.0,
+                value=None,
+                placeholder="Tap if Loan (e.g., 318885)",
+                step=500.0,
+                key="add_loan_input",
             )
             if pending_loan and pending_loan > 0:
-                st.caption(f"🇮🇳 **{format_inr(pending_loan)}** — *{number_to_indian_words(pending_loan)}*")
+                st.caption(
+                    f"🇮🇳 **{format_inr(pending_loan)}** — *{number_to_indian_words(pending_loan)}*"
+                )
         else:
             pending_loan = None
             st.caption("ℹ️ Pending Loan is only used for Expense / Loan entries.")
 
-    details = st.text_input("Details / Notes (Optional)", placeholder="e.g., Monthly bill or EMI")
+    details = st.text_input(
+        "Details / Notes (Optional)", placeholder="e.g., Monthly bill or EMI"
+    )
 
     also_schedule = False
     sched_due_day = t_date.day
     if t_type == "Expense":
         sc_col1, sc_col2 = st.columns(2)
         with sc_col1:
-            also_schedule = st.checkbox("⏰ Repeat every month in Scheduled Bills?", value=False)
+            also_schedule = st.checkbox(
+                "⏰ Repeat every month in Scheduled Bills?", value=False
+            )
         with sc_col2:
             if also_schedule:
-                sched_due_day = st.number_input("Monthly Due Day (1-31)", min_value=1, max_value=31, value=int(t_date.day))
+                sched_due_day = st.number_input(
+                    "Monthly Due Day (1-31)",
+                    min_value=1,
+                    max_value=31,
+                    value=int(t_date.day),
+                )
 
     inject_mobile_ux_fixes_js()
 
     if st.button("💾 Save Entry", type="primary", use_container_width=True):
         clean_amount = float(amount) if amount is not None else 0.0
         clean_loan = float(pending_loan) if pending_loan is not None else 0.0
-        final_sub = custom_sub.strip() if selected_sub == "➕ Custom Sub-category..." else selected_sub
+        final_sub = (
+            custom_sub.strip()
+            if selected_sub == "➕ Custom Sub-category..."
+            else selected_sub
+        )
         if not final_sub:
             final_sub = "Miscellaneous"
 
@@ -2026,15 +2877,30 @@ def open_add_modal():
             st.error("⚠️ Please enter an Amount or Pending Loan greater than ₹0.")
         else:
             add_transaction(
-                t_date, bank, t_type, category, final_sub, member,
-                clean_amount, clean_loan, details.strip()
+                t_date,
+                bank,
+                t_type,
+                category,
+                final_sub,
+                member,
+                clean_amount,
+                clean_loan,
+                details.strip(),
             )
             if also_schedule and t_type == "Expense":
                 add_single_recurring_bill(
-                    final_sub, category, bank, member,
-                    clean_amount, int(sched_due_day), details.strip() or "Scheduled Monthly Expense"
+                    final_sub,
+                    category,
+                    bank,
+                    member,
+                    clean_amount,
+                    int(sched_due_day),
+                    details.strip() or "Scheduled Monthly Expense",
                 )
-            st.toast(f"✅ Saved [{bank}] {final_sub}: {format_inr(clean_amount, 2)}", icon="💰")
+            st.toast(
+                f"✅ Saved [{bank}] {final_sub}: {format_inr(clean_amount, 2)}",
+                icon="💰",
+            )
             st.rerun()
 
 
@@ -2043,44 +2909,70 @@ def open_pending_loan_modal():
     st.caption(
         "Log a single Pending Loan with its Loan Category, or bulk-update all your active loans for the month at once!"
     )
-    mode_tab1, mode_tab2 = st.tabs(["➕ Add Single Pending Loan", "📋 Bulk Month-Wise Loan Sheet"])
+    mode_tab1, mode_tab2 = st.tabs(
+        ["➕ Add Single Pending Loan", "📋 Bulk Month-Wise Loan Sheet"]
+    )
 
     with mode_tab1:
         l_c1, l_c2 = st.columns(2)
         with l_c1:
-            loan_date = st.date_input("Loan Month / Date", date.today(), key="single_loan_dt")
-            loan_cat = st.selectbox("Loan Category", list(LOAN_CATEGORY_MAP.keys()), key="single_loan_cat")
+            loan_date = st.date_input(
+                "Loan Month / Date", today_ist(), key="single_loan_dt"
+            )
+            loan_cat = st.selectbox(
+                "Loan Category", list(LOAN_CATEGORY_MAP.keys()), key="single_loan_cat"
+            )
         with l_c2:
-            loan_bank = st.selectbox("Bank / Lender", BANK_OPTIONS, key="single_loan_bank")
+            loan_bank = st.selectbox(
+                "Bank / Lender", BANK_OPTIONS, key="single_loan_bank"
+            )
             sub_opts = LOAN_CATEGORY_MAP[loan_cat] + ["➕ Custom Loan Name..."]
-            loan_sub_sel = st.selectbox("Loan Sub-Category / Name", sub_opts, key="single_loan_sub")
+            loan_sub_sel = st.selectbox(
+                "Loan Sub-Category / Name", sub_opts, key="single_loan_sub"
+            )
 
         cust_loan_name = ""
         if loan_sub_sel == "➕ Custom Loan Name...":
-            cust_loan_name = st.text_input("Enter Custom Loan Name", placeholder="e.g., Car Loan SBI")
+            cust_loan_name = st.text_input(
+                "Enter Custom Loan Name", placeholder="e.g., Car Loan SBI"
+            )
 
         l_c3, l_c4 = st.columns(2)
         with l_c3:
-            loan_holder = st.selectbox("Loan Holder (Member)", EXPENSE_MEMBERS, index=2, key="single_loan_mem")
+            loan_holder = st.selectbox(
+                "Loan Holder (Member)", EXPENSE_MEMBERS, index=2, key="single_loan_mem"
+            )
             emi_paid_val = st.number_input(
                 "Monthly EMI Paid (₹) [Optional, can be 0]",
-                min_value=0.0, value=None,
-                placeholder="e.g., 7800 (or leave blank)", step=500.0,
-                key="single_loan_emi"
+                min_value=0.0,
+                value=None,
+                placeholder="e.g., 7800 (or leave blank)",
+                step=500.0,
+                key="single_loan_emi",
             )
         with l_c4:
             pending_bal_val = st.number_input(
                 "Pending Loan Balance Till Date (₹) *",
-                min_value=0.0, value=None,
-                placeholder="e.g., 318885", step=1000.0,
-                key="single_loan_bal"
+                min_value=0.0,
+                value=None,
+                placeholder="e.g., 318885",
+                step=1000.0,
+                key="single_loan_bal",
             )
-            loan_notes = st.text_input("Loan Details / Account Note", placeholder="e.g., Education Loan 1")
+            loan_notes = st.text_input(
+                "Loan Details / Account Note", placeholder="e.g., Education Loan 1"
+            )
 
         inject_mobile_ux_fixes_js()
 
-        if st.button("💾 Save Pending Loan Entry", type="primary", use_container_width=True):
-            final_loan_sub = cust_loan_name.strip() if loan_sub_sel == "➕ Custom Loan Name..." else loan_sub_sel
+        if st.button(
+            "💾 Save Pending Loan Entry", type="primary", use_container_width=True
+        ):
+            final_loan_sub = (
+                cust_loan_name.strip()
+                if loan_sub_sel == "➕ Custom Loan Name..."
+                else loan_sub_sel
+            )
             clean_emi = float(emi_paid_val) if emi_paid_val is not None else 0.0
             clean_bal = float(pending_bal_val) if pending_bal_val is not None else 0.0
 
@@ -2090,49 +2982,135 @@ def open_pending_loan_modal():
                 st.error("⚠️ Please enter a Pending Loan Balance greater than ₹0.")
             else:
                 add_transaction(
-                    loan_date, loan_bank, "Expense", loan_cat,
-                    final_loan_sub, loan_holder, clean_emi, clean_bal,
-                    loan_notes.strip() or f"{loan_cat} Balance"
+                    loan_date,
+                    loan_bank,
+                    "Expense",
+                    loan_cat,
+                    final_loan_sub,
+                    loan_holder,
+                    clean_emi,
+                    clean_bal,
+                    loan_notes.strip() or f"{loan_cat} Balance",
                 )
-                st.toast(f"✅ Saved {final_loan_sub} Pending Loan: {format_inr(clean_bal)}", icon="🏦")
+                st.toast(
+                    f"✅ Saved {final_loan_sub} Pending Loan: {format_inr(clean_bal)}",
+                    icon="🏦",
+                )
                 st.rerun()
 
     with mode_tab2:
         b_c1, b_c2 = st.columns(2)
         with b_c1:
-            bulk_loan_date = st.date_input("Target Month Date", date.today().replace(day=1), key="bulk_loan_dt")
+            bulk_loan_date = st.date_input(
+                "Target Month Date", today_ist().replace(day=1), key="bulk_loan_dt"
+            )
         with b_c2:
-            loan_hist_df = df[df["pending_loan"] > 0] if not df.empty else pd.DataFrame()
+            loan_hist_df = (
+                df[df["pending_loan"] > 0] if not df.empty else pd.DataFrame()
+            )
             if not loan_hist_df.empty:
                 prev_loan_months = ["📋 Standard Das Family Loan Template"] + list(
-                    loan_hist_df.sort_values("Month_Key", ascending=False)["Month_Label"].unique()
+                    loan_hist_df.sort_values("Month_Key", ascending=False)[
+                        "Month_Label"
+                    ].unique()
                 )
             else:
                 prev_loan_months = ["📋 Standard Das Family Loan Template"]
-            template_source = st.selectbox("Load Loan List From:", prev_loan_months, key="bulk_loan_src")
+            template_source = st.selectbox(
+                "Load Loan List From:", prev_loan_months, key="bulk_loan_src"
+            )
 
         if template_source == "📋 Standard Das Family Loan Template":
-            seed_loans = pd.DataFrame([
-                {"Save": True, "Bank": "SBI", "Loan Category": "Gold Loan", "Loan Sub-category": "Gold Loan 1", "Member": "Amal Das", "EMI Paid (₹)": 0.0, "Pending Loan (₹)": 79489.0, "Details": "Gold Loan 1"},
-                {"Save": True, "Bank": "SBI", "Loan Category": "Gold Loan", "Loan Sub-category": "Gold Loan 2", "Member": "Amal Das", "EMI Paid (₹)": 0.0, "Pending Loan (₹)": 23519.0, "Details": "Gold Loan 2"},
-                {"Save": True, "Bank": "SBI", "Loan Category": "Consumer & Durable Loan", "Loan Sub-category": "Consumer loan 1", "Member": "Aditya Das", "EMI Paid (₹)": 1736.0, "Pending Loan (₹)": 75694.0, "Details": "Consumer Loan 1"},
-                {"Save": True, "Bank": "SBI", "Loan Category": "Consumer & Durable Loan", "Loan Sub-category": "Consumer loan 2", "Member": "Amal Das", "EMI Paid (₹)": 0.0, "Pending Loan (₹)": 13888.0, "Details": "Consumer Loan 2"},
-                {"Save": True, "Bank": "SBI", "Loan Category": "Education Loan", "Loan Sub-category": "EDU loan 1", "Member": "Aditya Das", "EMI Paid (₹)": 0.0, "Pending Loan (₹)": 318885.0, "Details": "Education Loan 1"},
-                {"Save": True, "Bank": "SBI", "Loan Category": "Education Loan", "Loan Sub-category": "EDU loan 2", "Member": "Aditya Das", "EMI Paid (₹)": 0.0, "Pending Loan (₹)": 401647.0, "Details": "Education Loan 2"},
-                {"Save": True, "Bank": "HDFC", "Loan Category": "Bank & Personal Loan", "Loan Sub-category": "HDFC loan", "Member": "Aditya Das", "EMI Paid (₹)": 9406.0, "Pending Loan (₹)": 313834.0, "Details": "HDFC Personal Loan"},
-            ])
+            seed_loans = pd.DataFrame(
+                [
+                    {
+                        "Save": True,
+                        "Bank": "SBI",
+                        "Loan Category": "Gold Loan",
+                        "Loan Sub-category": "Gold Loan 1",
+                        "Member": "Amal Das",
+                        "EMI Paid (₹)": 0.0,
+                        "Pending Loan (₹)": 79489.0,
+                        "Details": "Gold Loan 1",
+                    },
+                    {
+                        "Save": True,
+                        "Bank": "SBI",
+                        "Loan Category": "Gold Loan",
+                        "Loan Sub-category": "Gold Loan 2",
+                        "Member": "Amal Das",
+                        "EMI Paid (₹)": 0.0,
+                        "Pending Loan (₹)": 23519.0,
+                        "Details": "Gold Loan 2",
+                    },
+                    {
+                        "Save": True,
+                        "Bank": "SBI",
+                        "Loan Category": "Consumer & Durable Loan",
+                        "Loan Sub-category": "Consumer loan 1",
+                        "Member": "Aditya Das",
+                        "EMI Paid (₹)": 1736.0,
+                        "Pending Loan (₹)": 75694.0,
+                        "Details": "Consumer Loan 1",
+                    },
+                    {
+                        "Save": True,
+                        "Bank": "SBI",
+                        "Loan Category": "Consumer & Durable Loan",
+                        "Loan Sub-category": "Consumer loan 2",
+                        "Member": "Amal Das",
+                        "EMI Paid (₹)": 0.0,
+                        "Pending Loan (₹)": 13888.0,
+                        "Details": "Consumer Loan 2",
+                    },
+                    {
+                        "Save": True,
+                        "Bank": "SBI",
+                        "Loan Category": "Education Loan",
+                        "Loan Sub-category": "EDU loan 1",
+                        "Member": "Aditya Das",
+                        "EMI Paid (₹)": 0.0,
+                        "Pending Loan (₹)": 318885.0,
+                        "Details": "Education Loan 1",
+                    },
+                    {
+                        "Save": True,
+                        "Bank": "SBI",
+                        "Loan Category": "Education Loan",
+                        "Loan Sub-category": "EDU loan 2",
+                        "Member": "Aditya Das",
+                        "EMI Paid (₹)": 0.0,
+                        "Pending Loan (₹)": 401647.0,
+                        "Details": "Education Loan 2",
+                    },
+                    {
+                        "Save": True,
+                        "Bank": "HDFC",
+                        "Loan Category": "Bank & Personal Loan",
+                        "Loan Sub-category": "HDFC loan",
+                        "Member": "Aditya Das",
+                        "EMI Paid (₹)": 9406.0,
+                        "Pending Loan (₹)": 313834.0,
+                        "Details": "HDFC Personal Loan",
+                    },
+                ]
+            )
         else:
-            prev_df = loan_hist_df[loan_hist_df["Month_Label"] == template_source].sort_values("id")
-            seed_loans = pd.DataFrame({
-                "Save": True,
-                "Bank": prev_df["bank"],
-                "Loan Category": prev_df["Loan_Category"],
-                "Loan Sub-category": prev_df["sub_category"],
-                "Member": prev_df["member"],
-                "EMI Paid (₹)": prev_df["amount"],
-                "Pending Loan (₹)": prev_df["pending_loan"],
-                "Details": prev_df["details"].fillna("")
-            })
+            prev_df = loan_hist_df[
+                loan_hist_df["Month_Label"] == template_source
+            ].sort_values("id")
+            seed_loans = pd.DataFrame(
+                {
+                    "Save": True,
+                    "Bank": prev_df["bank"],
+                    "Loan Category": prev_df["Loan_Category"],
+                    "Loan Sub-category": prev_df["sub_category"],
+                    "Member": prev_df["member"],
+                    "EMI Paid (₹)": prev_df["amount"],
+                    "Pending Loan (₹)": prev_df["pending_loan"],
+                    "Details": prev_df["details"].fillna(""),
+                }
+            )
 
         edited_loans = st.data_editor(
             seed_loans,
@@ -2141,17 +3119,27 @@ def open_pending_loan_modal():
             use_container_width=True,
             column_config={
                 "Save": st.column_config.CheckboxColumn("Save?", default=True),
-                "Bank": st.column_config.SelectboxColumn("Bank", options=BANK_OPTIONS, default="SBI"),
+                "Bank": st.column_config.SelectboxColumn(
+                    "Bank", options=BANK_OPTIONS, default="SBI"
+                ),
                 "Loan Category": st.column_config.SelectboxColumn(
-                    "Loan Category", options=list(LOAN_CATEGORY_MAP.keys()), default="Bank & Personal Loan"
+                    "Loan Category",
+                    options=list(LOAN_CATEGORY_MAP.keys()),
+                    default="Bank & Personal Loan",
                 ),
                 "Loan Sub-category": st.column_config.TextColumn("Loan Sub-category"),
-                "Member": st.column_config.SelectboxColumn("Member", options=EXPENSE_MEMBERS, default="Aditya Das"),
-                "EMI Paid (₹)": st.column_config.NumberColumn("EMI Paid (₹)", min_value=0.0, format="%.2f", default=0.0),
-                "Pending Loan (₹)": st.column_config.NumberColumn("Pending Loan (₹)", min_value=0.0, format="%.2f", default=0.0),
-                "Details": st.column_config.TextColumn("Details")
+                "Member": st.column_config.SelectboxColumn(
+                    "Member", options=EXPENSE_MEMBERS, default="Aditya Das"
+                ),
+                "EMI Paid (₹)": st.column_config.NumberColumn(
+                    "EMI Paid (₹)", min_value=0.0, format="%.2f", default=0.0
+                ),
+                "Pending Loan (₹)": st.column_config.NumberColumn(
+                    "Pending Loan (₹)", min_value=0.0, format="%.2f", default=0.0
+                ),
+                "Details": st.column_config.TextColumn("Details"),
             },
-            key="bulk_loan_editor"
+            key="bulk_loan_editor",
         )
 
         checked_loans = edited_loans[edited_loans["Save"] == True]
@@ -2167,7 +3155,8 @@ def open_pending_loan_modal():
 
         if st.button(
             f"🚀 Save {len(checked_loans)} Pending Loans for {bulk_loan_date.strftime('%B %Y')}",
-            type="primary", use_container_width=True
+            type="primary",
+            use_container_width=True,
         ):
             if checked_loans.empty:
                 st.warning("Please keep at least one loan row checked.")
@@ -2182,13 +3171,17 @@ def open_pending_loan_modal():
                         str(r.get("Member") or "Aditya Das"),
                         float(r.get("EMI Paid (₹)") or 0.0),
                         float(r.get("Pending Loan (₹)") or 0.0),
-                        str(r.get("Details") or "").strip()
+                        str(r.get("Details") or "").strip(),
                     )
                     for _, r in checked_loans.iterrows()
-                    if float(r.get("Pending Loan (₹)") or 0.0) > 0 or float(r.get("EMI Paid (₹)") or 0.0) > 0
+                    if float(r.get("Pending Loan (₹)") or 0.0) > 0
+                    or float(r.get("EMI Paid (₹)") or 0.0) > 0
                 ]
                 bulk_add_transactions(loan_records)
-                st.toast(f"🏦 Saved {len(loan_records)} Pending Loans for {bulk_loan_date.strftime('%B %Y')}!", icon="✅")
+                st.toast(
+                    f"🏦 Saved {len(loan_records)} Pending Loans for {bulk_loan_date.strftime('%B %Y')}!",
+                    icon="✅",
+                )
                 st.rerun()
 
 
@@ -2198,7 +3191,9 @@ def open_excel_import_modal():
         "Directly supports **`Merged_SBI_HDFC_Expenses_2026.csv`** and **`.xlsx`**! "
         "Any salary credited on or after the 24th (e.g., 30th Oct Friday) is automatically counted as **Next Month's Salary**."
     )
-    uploaded_file = st.file_uploader("Select your CSV or Excel (.xlsx / .xls) file", type=["csv", "xlsx", "xls"])
+    uploaded_file = st.file_uploader(
+        "Select your CSV or Excel (.xlsx / .xls) file", type=["csv", "xlsx", "xls"]
+    )
 
     if uploaded_file is not None:
         sheets_dict = {}
@@ -2211,7 +3206,7 @@ def open_excel_import_modal():
                 selected_sheets = st.multiselect(
                     "📑 Select Monthly Sheet Tabs to Import",
                     options=xl.sheet_names,
-                    default=xl.sheet_names
+                    default=xl.sheet_names,
                 )
                 for sh in selected_sheets:
                     sheets_dict[sh] = pd.read_excel(uploaded_file, sheet_name=sh)
@@ -2245,25 +3240,29 @@ def open_excel_import_modal():
                 sub_col = st.selectbox(
                     "Sub-category Column",
                     none_opt + cols,
-                    index=guess_col(["sub-catego", "sub_catego", "sub", "item"], include_none=True)
+                    index=guess_col(
+                        ["sub-catego", "sub_catego", "sub", "item"], include_none=True
+                    ),
                 )
             with m_c2:
                 type_col = st.selectbox(
                     "Type Column",
                     none_opt + cols,
-                    index=guess_col(["type", "income/expense", "nature"], include_none=True)
+                    index=guess_col(
+                        ["type", "income/expense", "nature"], include_none=True
+                    ),
                 )
             with m_c3:
                 bank_col = st.selectbox(
                     "Bank Column",
                     none_opt + cols,
-                    index=guess_col(["bank", "account"], include_none=True)
+                    index=guess_col(["bank", "account"], include_none=True),
                 )
             with m_c4:
                 cat_col = st.selectbox(
                     "Category Column",
                     none_opt + cols,
-                    index=guess_col(["category"], include_none=True)
+                    index=guess_col(["category"], include_none=True),
                 )
 
             m_c5, m_c6, m_c7, m_c8 = st.columns(4)
@@ -2271,80 +3270,142 @@ def open_excel_import_modal():
                 amt_col = st.selectbox(
                     "Amount Column",
                     none_opt + cols,
-                    index=guess_col(["amount", "paid", "emi", "value"], include_none=True)
+                    index=guess_col(
+                        ["amount", "paid", "emi", "value"], include_none=True
+                    ),
                 )
             with m_c6:
                 loan_col = st.selectbox(
                     "Pending Loan Column",
                     none_opt + cols,
-                    index=guess_col(["pending", "loan", "balance"], include_none=True)
+                    index=guess_col(["pending", "loan", "balance"], include_none=True),
                 )
             with m_c7:
                 member_col = st.selectbox(
                     "Member Column",
                     none_opt + cols,
-                    index=guess_col(["member", "name", "paid by"], include_none=True)
+                    index=guess_col(["member", "name", "paid by"], include_none=True),
                 )
             with m_c8:
                 date_col = st.selectbox(
                     "Date Column",
                     none_opt + cols,
-                    index=guess_col(["date", "day"], include_none=True)
+                    index=guess_col(["date", "day"], include_none=True),
                 )
 
             details_col = st.selectbox(
                 "Details / Narration Column",
                 none_opt + cols,
-                index=guess_col(["detail", "narration", "note", "remark"], include_none=True)
+                index=guess_col(
+                    ["detail", "narration", "note", "remark"], include_none=True
+                ),
             )
 
         parsed_rows = []
-        income_keywords = ("salary", "income", "bonus", "freelance", "dividend", "interest", "pension")
+        income_keywords = (
+            "salary",
+            "income",
+            "bonus",
+            "freelance",
+            "dividend",
+            "interest",
+            "pension",
+        )
 
         for sh_name in selected_sheets:
             sh_df = sheets_dict[sh_name]
-            guessed_sh_date = date.today().replace(day=1)
+            guessed_sh_date = today_ist().replace(day=1)
             try:
-                guessed_sh_date = pd.to_datetime(sh_name, errors="raise").date().replace(day=1)
+                guessed_sh_date = (
+                    pd.to_datetime(sh_name, errors="raise").date().replace(day=1)
+                )
             except Exception:
                 pass
 
             for _, r in sh_df.iterrows():
-                raw_bank_val = str(r[bank_col]).strip().lower() if bank_col in r and pd.notna(r[bank_col]) else ""
-                raw_type_val = str(r[type_col]).strip().lower() if type_col in r and pd.notna(r[type_col]) else ""
-                if raw_bank_val == "total" or raw_type_val.startswith("inc:") or raw_type_val == "total":
+                raw_bank_val = (
+                    str(r[bank_col]).strip().lower()
+                    if bank_col in r and pd.notna(r[bank_col])
+                    else ""
+                )
+                raw_type_val = (
+                    str(r[type_col]).strip().lower()
+                    if type_col in r and pd.notna(r[type_col])
+                    else ""
+                )
+                if (
+                    raw_bank_val == "total"
+                    or raw_type_val.startswith("inc:")
+                    or raw_type_val == "total"
+                ):
                     continue
 
-                amt_val = clean_currency_value(r[amt_col]) if amt_col in r and amt_col != "(None / Auto-Detect)" else 0.0
-                loan_val = clean_currency_value(r[loan_col]) if loan_col in r and loan_col != "(None / Auto-Detect)" else 0.0
+                amt_val = (
+                    clean_currency_value(r[amt_col])
+                    if amt_col in r and amt_col != "(None / Auto-Detect)"
+                    else 0.0
+                )
+                loan_val = (
+                    clean_currency_value(r[loan_col])
+                    if loan_col in r and loan_col != "(None / Auto-Detect)"
+                    else 0.0
+                )
                 if amt_val <= 0 and loan_val <= 0:
                     continue
 
                 row_type = "Expense"
-                if type_col != "(None / Auto-Detect)" and type_col in r and pd.notna(r[type_col]):
+                if (
+                    type_col != "(None / Auto-Detect)"
+                    and type_col in r
+                    and pd.notna(r[type_col])
+                ):
                     t_raw = str(r[type_col]).strip().lower()
                     if "self" in t_raw or "internal" in t_raw or "transfer" in t_raw:
                         row_type = "Self Transfer"
                     elif "inc" in t_raw or "sal" in t_raw or "earn" in t_raw:
                         row_type = "Income"
 
-                raw_sub = r[sub_col] if sub_col != "(None / Auto-Detect)" and sub_col in r else ""
+                raw_sub = (
+                    r[sub_col]
+                    if sub_col != "(None / Auto-Detect)" and sub_col in r
+                    else ""
+                )
                 sub_str = "" if pd.isna(raw_sub) else str(raw_sub).strip()
-                if sub_str.lower() in ("total", "grand total", "sub-category", "sub category"):
+                if sub_str.lower() in (
+                    "total",
+                    "grand total",
+                    "sub-category",
+                    "sub category",
+                ):
                     continue
 
                 if not sub_str or sub_str.lower() in ("nan", "none", ""):
-                    sub_str = "Miscellaneous" if row_type == "Expense" else ("Other Income" if row_type == "Income" else "Self Transfer (SBI <-> HDFC)")
+                    sub_str = (
+                        "Miscellaneous"
+                        if row_type == "Expense"
+                        else (
+                            "Other Income"
+                            if row_type == "Income"
+                            else "Self Transfer (SBI <-> HDFC)"
+                        )
+                    )
 
                 if type_col == "(None / Auto-Detect)":
-                    if any(k in sub_str.lower() for k in income_keywords) and loan_val <= 0:
+                    if (
+                        any(k in sub_str.lower() for k in income_keywords)
+                        and loan_val <= 0
+                    ):
                         row_type = "Income"
 
                 if row_type in ("Income", "Self Transfer"):
                     loan_val = 0.0
 
                 row_bank = "SBI"
-                if bank_col != "(None / Auto-Detect)" and bank_col in r and pd.notna(r[bank_col]):
+                if (
+                    bank_col != "(None / Auto-Detect)"
+                    and bank_col in r
+                    and pd.notna(r[bank_col])
+                ):
                     b_str = str(r[bank_col]).strip().upper()
                     if "HDFC" in b_str:
                         row_bank = "HDFC"
@@ -2354,44 +3415,62 @@ def open_excel_import_modal():
                         row_bank = b_str
 
                 row_date = guessed_sh_date
-                if date_col != "(None / Auto-Detect)" and date_col in r and pd.notna(r[date_col]):
+                if (
+                    date_col != "(None / Auto-Detect)"
+                    and date_col in r
+                    and pd.notna(r[date_col])
+                ):
                     try:
                         row_date = pd.to_datetime(r[date_col]).date()
                     except Exception:
                         row_date = guessed_sh_date
 
                 row_member = "Aditya Das"
-                if member_col != "(None / Auto-Detect)" and member_col in r and pd.notna(r[member_col]):
+                if (
+                    member_col != "(None / Auto-Detect)"
+                    and member_col in r
+                    and pd.notna(r[member_col])
+                ):
                     m_str = str(r[member_col]).strip()
                     if m_str and m_str.lower() not in ("nan", "none"):
                         row_member = m_str
 
                 row_details = f"Imported ({sh_name})"
-                if details_col != "(None / Auto-Detect)" and details_col in r and pd.notna(r[details_col]):
+                if (
+                    details_col != "(None / Auto-Detect)"
+                    and details_col in r
+                    and pd.notna(r[details_col])
+                ):
                     d_str = str(r[details_col]).strip()
                     if d_str and d_str.lower() not in ("nan", "none"):
                         row_details = d_str
 
                 parent_cat = ""
-                if cat_col != "(None / Auto-Detect)" and cat_col in r and pd.notna(r[cat_col]):
+                if (
+                    cat_col != "(None / Auto-Detect)"
+                    and cat_col in r
+                    and pd.notna(r[cat_col])
+                ):
                     c_str = str(r[cat_col]).strip()
                     if c_str and c_str.lower() not in ("nan", "none"):
                         parent_cat = c_str
                 if not parent_cat:
                     parent_cat = infer_parent_category(sub_str, row_type)
 
-                parsed_rows.append({
-                    "Import": True,
-                    "Date": row_date,
-                    "Bank": row_bank,
-                    "Type": row_type,
-                    "Category": parent_cat,
-                    "Sub-category": sub_str,
-                    "Member": row_member,
-                    "Amount (₹)": amt_val,
-                    "Pending Loan (₹)": loan_val,
-                    "Details": row_details
-                })
+                parsed_rows.append(
+                    {
+                        "Import": True,
+                        "Date": row_date,
+                        "Bank": row_bank,
+                        "Type": row_type,
+                        "Category": parent_cat,
+                        "Sub-category": sub_str,
+                        "Member": row_member,
+                        "Amount (₹)": amt_val,
+                        "Pending Loan (₹)": loan_val,
+                        "Details": row_details,
+                    }
+                )
 
         if not parsed_rows:
             st.warning("⚠️ No valid transaction rows were found.")
@@ -2407,20 +3486,30 @@ def open_excel_import_modal():
                 "Import": st.column_config.CheckboxColumn("Import?", default=True),
                 "Date": st.column_config.DateColumn("Date"),
                 "Bank": st.column_config.SelectboxColumn("Bank", options=BANK_OPTIONS),
-                "Type": st.column_config.SelectboxColumn("Type", options=["Expense", "Income", "Self Transfer"]),
+                "Type": st.column_config.SelectboxColumn(
+                    "Type", options=["Expense", "Income", "Self Transfer"]
+                ),
                 "Category": st.column_config.TextColumn("Category"),
                 "Sub-category": st.column_config.TextColumn("Sub-category"),
-                "Member": st.column_config.SelectboxColumn("Member", options=EXPENSE_MEMBERS + ["Other"]),
-                "Amount (₹)": st.column_config.NumberColumn("Amount (₹)", min_value=0.0, format="%.2f"),
-                "Pending Loan (₹)": st.column_config.NumberColumn("Pending Loan (₹)", min_value=0.0, format="%.2f"),
-                "Details": st.column_config.TextColumn("Details")
-            }
+                "Member": st.column_config.SelectboxColumn(
+                    "Member", options=EXPENSE_MEMBERS + ["Other"]
+                ),
+                "Amount (₹)": st.column_config.NumberColumn(
+                    "Amount (₹)", min_value=0.0, format="%.2f"
+                ),
+                "Pending Loan (₹)": st.column_config.NumberColumn(
+                    "Pending Loan (₹)", min_value=0.0, format="%.2f"
+                ),
+                "Details": st.column_config.TextColumn("Details"),
+            },
         )
 
         to_import = edited_import_df[edited_import_df["Import"] == True]
         imp_inc_total = to_import[to_import["Type"] == "Income"]["Amount (₹)"].sum()
         imp_exp_total = to_import[to_import["Type"] == "Expense"]["Amount (₹)"].sum()
-        imp_self_total = to_import[to_import["Type"] == "Self Transfer"]["Amount (₹)"].sum()
+        imp_self_total = to_import[to_import["Type"] == "Self Transfer"][
+            "Amount (₹)"
+        ].sum()
 
         st.caption(
             f"✅ **{len(to_import)} rows ready** | "
@@ -2429,7 +3518,11 @@ def open_excel_import_modal():
             f"Self Transfer (Excluded): **{format_inr(imp_self_total, 0)}**"
         )
 
-        if st.button(f"🚀 Import All {len(to_import)} Rows into Database", type="primary", use_container_width=True):
+        if st.button(
+            f"🚀 Import All {len(to_import)} Rows into Database",
+            type="primary",
+            use_container_width=True,
+        ):
             if to_import.empty:
                 st.warning("Please keep at least one row checked.")
             else:
@@ -2443,30 +3536,43 @@ def open_excel_import_modal():
                         str(row["Member"]).strip(),
                         float(row["Amount (₹)"] or 0.0),
                         float(row["Pending Loan (₹)"] or 0.0),
-                        str(row["Details"] or "").strip()
+                        str(row["Details"] or "").strip(),
                     )
                     for _, row in to_import.iterrows()
                 ]
                 bulk_add_transactions(records_to_save)
-                st.toast(f"🎉 Imported {len(records_to_save)} rows into database!", icon="📥")
+                st.toast(
+                    f"🎉 Imported {len(records_to_save)} rows into database!", icon="📥"
+                )
                 st.rerun()
 
 
 @st.dialog("⚠️ Confirm Undo Last Entry", width="small")
 def open_undo_confirm_modal(latest_row):
-    st.warning("Are you sure you want to undo and move this latest entry to the Recycle Bin?")
+    st.warning(
+        "Are you sure you want to undo and move this latest entry to the Recycle Bin?"
+    )
     amt_val = float(latest_row["amount"])
     loan_val = float(latest_row.get("pending_loan", 0.0) or 0.0)
 
-    st.markdown(f"""
+    st.markdown(
+        f"""
     * **Entry ID:** `#{int(latest_row['id'])}` (`{latest_row['bank']}`)
     * **Date:** `{latest_row['t_date'].strftime('%Y-%m-%d')}`
     * **Type & Sub-category:** `{latest_row['t_type']}` → **{latest_row['sub_category']}**
     * **Member:** `{latest_row['member']}`
     * **Amount:** **{format_inr(amt_val, 2)}** *({number_to_indian_words(amt_val) or '₹0'})*
-    """ + (f"* **Pending Loan:** **{format_inr(loan_val, 2)}** *({number_to_indian_words(loan_val)})*" if loan_val > 0 else ""))
+    """
+        + (
+            f"* **Pending Loan:** **{format_inr(loan_val, 2)}** *({number_to_indian_words(loan_val)})*"
+            if loan_val > 0
+            else ""
+        )
+    )
 
-    st.caption(f"ℹ️ You can restore this item from the 🗑️ Recycle Bin within {RECYCLE_BIN_RETENTION_DAYS} days.")
+    st.caption(
+        f"ℹ️ You can restore this item from the 🗑️ Recycle Bin within {RECYCLE_BIN_RETENTION_DAYS} days."
+    )
 
     c_yes, c_no = st.columns(2)
     with c_yes:
@@ -2482,7 +3588,7 @@ def open_undo_confirm_modal(latest_row):
 @st.dialog("🗑️ Recycle Bin (Auto-Clears Every 3 Days)", width="large")
 def open_recycle_bin_modal():
     st.caption(
-        f"Deleted entries are safely kept here for **{RECYCLE_BIN_RETENTION_DAYS} days** before being permanently erased."
+        f"Deleted entries are safely kept here for **{RECYCLE_BIN_RETENTION_DAYS} days** (IST) before being permanently erased."
     )
     current_bin = load_recycle_bin()
 
@@ -2494,7 +3600,7 @@ def open_recycle_bin_modal():
     selected_bin_labels = st.multiselect(
         "Select entries to Restore or Permanently Delete:",
         options=list(bin_map.keys()),
-        default=list(bin_map.keys())
+        default=list(bin_map.keys()),
     )
 
     inject_mobile_ux_fixes_js()
@@ -2505,7 +3611,10 @@ def open_recycle_bin_modal():
             if selected_bin_labels:
                 ids_to_restore = [bin_map[lbl] for lbl in selected_bin_labels]
                 restore_transactions(ids_to_restore)
-                st.toast(f"♻️ Restored {len(ids_to_restore)} entry(s) to dashboard!", icon="✅")
+                st.toast(
+                    f"♻️ Restored {len(ids_to_restore)} entry(s) to dashboard!",
+                    icon="✅",
+                )
                 st.rerun()
             else:
                 st.warning("Select at least one entry above.")
@@ -2514,38 +3623,61 @@ def open_recycle_bin_modal():
             if selected_bin_labels:
                 ids_to_purge = [bin_map[lbl] for lbl in selected_bin_labels]
                 permanent_delete_transactions(ids_to_purge)
-                st.toast(f"🔥 Permanently deleted {len(ids_to_purge)} entry(s)!", icon="🗑️")
+                st.toast(
+                    f"🔥 Permanently deleted {len(ids_to_purge)} entry(s)!", icon="🗑️"
+                )
                 st.rerun()
             else:
                 st.warning("Select at least one entry above.")
 
     st.divider()
-    disp_bin = current_bin[["id", "t_date", "bank", "sub_category", "member", "amount", "pending_loan", "Auto_Clears_In"]].copy()
+    disp_bin = current_bin[
+        [
+            "id",
+            "t_date",
+            "bank",
+            "sub_category",
+            "member",
+            "amount",
+            "pending_loan",
+            "Auto_Clears_In",
+        ]
+    ].copy()
     disp_bin["t_date"] = disp_bin["t_date"].dt.strftime("%Y-%m-%d")
     disp_bin["amount"] = disp_bin["amount"].apply(format_inr)
     disp_bin["pending_loan"] = disp_bin["pending_loan"].apply(format_inr)
-    disp_bin.columns = ["ID", "Date", "Bank", "Sub-category", "Member", "Amount", "Pending Loan", "Expires In"]
+    disp_bin.columns = [
+        "ID",
+        "Date",
+        "Bank",
+        "Sub-category",
+        "Member",
+        "Amount",
+        "Pending Loan",
+        "Expires In",
+    ]
 
     bin_cards = []
     for _, br in current_bin.iterrows():
         b_loan_pill = (
             f'<span class="hist-pill" style="color:#f39c12;">🏦 Loan: {format_inr(br["pending_loan"])}</span>'
-            if float(br["pending_loan"]) > 0 else ""
+            if float(br["pending_loan"]) > 0
+            else ""
         )
         bin_cards.append(
             f'<div class="hist-card">'
             f'<div class="hist-card-top">'
             f'<div class="hist-subcat">#{int(br["id"])} • {html_lib.escape(str(br["sub_category"]))}</div>'
             f'<div class="hist-amt" style="color:#ff6b6b;">{format_inr(br["amount"])}</div>'
-            f'</div>'
+            f"</div>"
             f'<div class="hist-badges">'
             f'<span class="hist-pill">📅 {br["t_date"].strftime("%d %b %Y")}</span>'
             f'<span class="hist-pill">🏦 {html_lib.escape(str(br["bank"]))}</span>'
             f'<span class="hist-pill">👨‍👩‍👦 {html_lib.escape(str(br["member"]))}</span>'
             f'<span class="hist-pill">⏳ {html_lib.escape(str(br["Auto_Clears_In"]))}</span>'
-            f'{b_loan_pill}'
-            f'</div>'
-            f'</div>'
+            f"{b_loan_pill}"
+            f"</div>"
+            f"</div>"
         )
     render_responsive_table_or_cards(disp_bin, bin_cards)
 
@@ -2565,13 +3697,13 @@ def open_copy_modal():
     with cl_col1:
         source_month = st.selectbox("1️⃣ Copy From Month", avail_months)
     with cl_col2:
-        target_date = st.date_input("2️⃣ New Month Date", date.today())
+        target_date = st.date_input("2️⃣ New Month Date", today_ist())
 
     # Uses on_click callback so switching options NEVER refreshes the whole page or closes this popup!
     clone_filter = button_selector(
         "3️⃣ What to Fetch?",
         ["Only Expenses & Loans", "Only Pending Loans", "Both Expenses & Income"],
-        key="copy_modal_filter"
+        key="copy_modal_filter",
     )
 
     inject_mobile_ux_fixes_js()
@@ -2589,32 +3721,42 @@ def open_copy_modal():
         return
 
     src_df = src_df.sort_values("id", ascending=True)
-    preview_df = pd.DataFrame({
-        "Copy": True,
-        "Bank": src_df["bank"],
-        "Type": src_df["t_type"],
-        "Category": src_df["category"],
-        "Sub-category": src_df["sub_category"],
-        "Member": src_df["member"],
-        "Amount (₹)": src_df["amount"],
-        "Pending Loan (₹)": src_df["pending_loan"],
-        "Details": src_df["details"].fillna("")
-    })
+    preview_df = pd.DataFrame(
+        {
+            "Copy": True,
+            "Bank": src_df["bank"],
+            "Type": src_df["t_type"],
+            "Category": src_df["category"],
+            "Sub-category": src_df["sub_category"],
+            "Member": src_df["member"],
+            "Amount (₹)": src_df["amount"],
+            "Pending Loan (₹)": src_df["pending_loan"],
+            "Details": src_df["details"].fillna(""),
+        }
+    )
 
     edited_clone_df = st.data_editor(
-        preview_df, hide_index=True, use_container_width=True,
+        preview_df,
+        hide_index=True,
+        use_container_width=True,
         column_config={
             "Copy": st.column_config.CheckboxColumn("Copy?", default=True),
             "Bank": st.column_config.SelectboxColumn("Bank", options=BANK_OPTIONS),
             "Type": st.column_config.TextColumn("Type", disabled=True),
             "Category": st.column_config.TextColumn("Category"),
             "Sub-category": st.column_config.TextColumn("Sub-category"),
-            "Member": st.column_config.SelectboxColumn("Member", options=EXPENSE_MEMBERS + ["Other"]),
-            "Amount (₹)": st.column_config.NumberColumn("Amount (₹)", min_value=0.0, format="%.2f"),
-            "Pending Loan (₹)": st.column_config.NumberColumn("Pending Loan (₹)", min_value=0.0, format="%.2f"),
-            "Details": st.column_config.TextColumn("Details")
+            "Member": st.column_config.SelectboxColumn(
+                "Member", options=EXPENSE_MEMBERS + ["Other"]
+            ),
+            "Amount (₹)": st.column_config.NumberColumn(
+                "Amount (₹)", min_value=0.0, format="%.2f"
+            ),
+            "Pending Loan (₹)": st.column_config.NumberColumn(
+                "Pending Loan (₹)", min_value=0.0, format="%.2f"
+            ),
+            "Details": st.column_config.TextColumn("Details"),
         },
-        key=f"copy_editor_{source_month}_{clone_filter}"
+        key=f"copy_editor_{source_month}_{clone_filter}",
     )
 
     selected_rows = edited_clone_df[edited_clone_df["Copy"] == True]
@@ -2629,17 +3771,23 @@ def open_copy_modal():
 
     if st.button(
         f"🚀 Import {len(selected_rows)} Entries to {target_date.strftime('%B %Y')}",
-        type="primary", use_container_width=True
+        type="primary",
+        use_container_width=True,
     ):
         if selected_rows.empty:
             st.warning("⚠️ Please keep at least one row checked to import.")
         else:
             records_to_insert = [
                 (
-                    target_date, str(row["Bank"]), str(row["Type"]), str(row["Category"]),
-                    str(row["Sub-category"]).strip(), str(row["Member"]),
-                    float(row["Amount (₹)"] or 0.0), float(row["Pending Loan (₹)"] or 0.0),
-                    str(row["Details"] or "").strip()
+                    target_date,
+                    str(row["Bank"]),
+                    str(row["Type"]),
+                    str(row["Category"]),
+                    str(row["Sub-category"]).strip(),
+                    str(row["Member"]),
+                    float(row["Amount (₹)"] or 0.0),
+                    float(row["Pending Loan (₹)"] or 0.0),
+                    str(row["Details"] or "").strip(),
                 )
                 for _, row in selected_rows.iterrows()
             ]
@@ -2656,8 +3804,7 @@ def open_modify_modal(target_df):
 
     records_map = dict(zip(target_df["Record_Label"], target_df["id"]))
     selected_label = st.selectbox(
-        "Select the entry you want to modify:",
-        options=list(records_map.keys())
+        "Select the entry you want to modify:", options=list(records_map.keys())
     )
 
     rec_id = records_map[selected_label]
@@ -2666,14 +3813,13 @@ def open_modify_modal(target_df):
     type_opts = ["Expense", "Income", "Self Transfer"]
     default_type = rec_row["t_type"] if rec_row["t_type"] in type_opts else "Expense"
     edit_type = button_selector(
-        "Transaction Type",
-        type_opts,
-        key=f"mod_type_{rec_id}",
-        default=default_type
+        "Transaction Type", type_opts, key=f"mod_type_{rec_id}", default=default_type
     )
 
     cat_map = get_category_map_for_type(edit_type)
-    cat_list = list(cat_map.keys()) + [c for c in LOAN_CATEGORY_MAP.keys() if c not in cat_map]
+    cat_list = list(cat_map.keys()) + [
+        c for c in LOAN_CATEGORY_MAP.keys() if c not in cat_map
+    ]
     if rec_row["category"] not in cat_list:
         cat_list.insert(0, rec_row["category"])
     default_cat_idx = cat_list.index(rec_row["category"])
@@ -2683,13 +3829,20 @@ def open_modify_modal(target_df):
         bank_list = list(BANK_OPTIONS)
         if rec_row["bank"] not in bank_list:
             bank_list.insert(0, rec_row["bank"])
-        edit_bank = st.selectbox("Bank", bank_list, index=bank_list.index(rec_row["bank"]), key=f"mod_bank_{rec_id}")
+        edit_bank = st.selectbox(
+            "Bank",
+            bank_list,
+            index=bank_list.index(rec_row["bank"]),
+            key=f"mod_bank_{rec_id}",
+        )
     with mc3:
         edit_category = st.selectbox(
             "Category", cat_list, index=default_cat_idx, key=f"mod_cat_{rec_id}"
         )
 
-    base_subs = cat_map.get(edit_category, LOAN_CATEGORY_MAP.get(edit_category, ["Miscellaneous"]))
+    base_subs = cat_map.get(
+        edit_category, LOAN_CATEGORY_MAP.get(edit_category, ["Miscellaneous"])
+    )
     sub_list = list(base_subs)
     current_sub = str(rec_row["sub_category"])
     if current_sub not in sub_list:
@@ -2710,52 +3863,80 @@ def open_modify_modal(target_df):
 
     fc1, fc2 = st.columns(2)
     with fc1:
-        edit_date = st.date_input("Date", value=rec_row["t_date"].date(), key=f"mod_date_{rec_id}")
+        edit_date = st.date_input(
+            "Date", value=rec_row["t_date"].date(), key=f"mod_date_{rec_id}"
+        )
     with fc2:
         mem_list = list(EXPENSE_MEMBERS if edit_type != "Income" else EARNING_MEMBERS)
         if rec_row["member"] not in mem_list:
             mem_list.insert(0, rec_row["member"])
         edit_member = st.selectbox(
-            "Member", mem_list, index=mem_list.index(rec_row["member"]), key=f"mod_mem_{rec_id}"
+            "Member",
+            mem_list,
+            index=mem_list.index(rec_row["member"]),
+            key=f"mod_mem_{rec_id}",
         )
 
     fc3, fc4 = st.columns(2)
     with fc3:
         edit_amount = st.number_input(
-            "Amount (₹)", min_value=0.0,
-            value=float(rec_row["amount"]), format="%.2f", step=100.0,
-            key=f"mod_amt_{rec_id}"
+            "Amount (₹)",
+            min_value=0.0,
+            value=float(rec_row["amount"]),
+            format="%.2f",
+            step=100.0,
+            key=f"mod_amt_{rec_id}",
         )
         if edit_amount and edit_amount > 0:
-            st.caption(f"🇮🇳 **{format_inr(edit_amount)}** — *{number_to_indian_words(edit_amount)}*")
+            st.caption(
+                f"🇮🇳 **{format_inr(edit_amount)}** — *{number_to_indian_words(edit_amount)}*"
+            )
     with fc4:
         if edit_type == "Expense":
             edit_pending_loan = st.number_input(
-                "Pending Loan Balance (₹)", min_value=0.0,
-                value=float(rec_row["pending_loan"]), format="%.2f", step=500.0,
-                key=f"mod_loan_{rec_id}"
+                "Pending Loan Balance (₹)",
+                min_value=0.0,
+                value=float(rec_row["pending_loan"]),
+                format="%.2f",
+                step=500.0,
+                key=f"mod_loan_{rec_id}",
             )
             if edit_pending_loan and edit_pending_loan > 0:
-                st.caption(f"🇮🇳 **{format_inr(edit_pending_loan)}** — *{number_to_indian_words(edit_pending_loan)}*")
+                st.caption(
+                    f"🇮🇳 **{format_inr(edit_pending_loan)}** — *{number_to_indian_words(edit_pending_loan)}*"
+                )
         else:
             edit_pending_loan = 0.0
             st.caption("Pending Loan is ₹0 for Income / Self Transfer entries.")
 
-    edit_details = st.text_input("Details / Notes", value=str(rec_row["details"] or ""), key=f"mod_det_{rec_id}")
+    edit_details = st.text_input(
+        "Details / Notes", value=str(rec_row["details"] or ""), key=f"mod_det_{rec_id}"
+    )
 
     inject_mobile_ux_fixes_js()
 
     if st.button("💾 Save Changes", type="primary", use_container_width=True):
-        final_sub_val = custom_edit_sub.strip() if edit_sub_choice == "➕ Custom Sub-category..." else edit_sub_choice
+        final_sub_val = (
+            custom_edit_sub.strip()
+            if edit_sub_choice == "➕ Custom Sub-category..."
+            else edit_sub_choice
+        )
         if not final_sub_val:
             final_sub_val = "Miscellaneous"
         if (edit_amount or 0.0) <= 0 and (edit_pending_loan or 0.0) <= 0:
             st.error("⚠️ Please enter an Amount or Pending Loan greater than ₹0.")
         else:
             update_transaction(
-                rec_id, edit_date, edit_bank, edit_type, edit_category,
-                final_sub_val, edit_member, float(edit_amount or 0.0),
-                float(edit_pending_loan or 0.0), edit_details.strip()
+                rec_id,
+                edit_date,
+                edit_bank,
+                edit_type,
+                edit_category,
+                final_sub_val,
+                edit_member,
+                float(edit_amount or 0.0),
+                float(edit_pending_loan or 0.0),
+                edit_details.strip(),
             )
             st.toast(f"✅ Entry #{rec_id} ({final_sub_val}) updated!", icon="✏️")
             st.rerun()
@@ -2774,34 +3955,74 @@ def open_delete_modal(target_df, scope_label="Selected Month"):
     to_delete = st.multiselect(
         "Select one or more entries to move to the Recycle Bin:",
         options=list(records_map.keys()),
-        placeholder="Tap to pick entries..."
+        placeholder="Tap to pick entries...",
     )
 
     inject_mobile_ux_fixes_js()
 
-    if st.button("🗑️ Move Selected to Recycle Bin", type="primary", use_container_width=True):
+    if st.button(
+        "🗑️ Move Selected to Recycle Bin", type="primary", use_container_width=True
+    ):
         if to_delete:
             ids_to_remove = [records_map[label] for label in to_delete]
             soft_delete_transactions(ids_to_remove)
-            st.toast(f"🗑️ Moved {len(ids_to_remove)} entry(s) to Recycle Bin!", icon="✅")
+            st.toast(
+                f"🗑️ Moved {len(ids_to_remove)} entry(s) to Recycle Bin!", icon="✅"
+            )
             st.rerun()
         else:
             st.warning("⚠️ Please select at least one entry above.")
 
+
 # ==========================================
-# 7. TOP HEADER WITH 1-TAP SYNC & ACTION BAR
+# 7. TOP HEADER WITH IST SYNC, AUTH & ACTION BAR
 # ==========================================
-hdr_left, hdr_right = st.columns([3.2, 0.8])
+auth_active = bool(st.session_state.get("user_email")) or (
+    hasattr(st, "user") and getattr(st.user, "is_logged_in", False)
+)
+if auth_active:
+    hdr_left, hdr_sync, hdr_logout = st.columns([2.8, 0.7, 0.5])
+else:
+    hdr_left, hdr_sync = st.columns([3.2, 0.8])
+    hdr_logout = None
+
 with hdr_left:
     st.markdown(
         f'<div class="app-top-title"><img src="{APP_ICON_URI}" class="app-logo-img"/> Das Family Expense & Loan Tracker</div>',
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
-with hdr_right:
-    if st.button("🔄 Sync", key="top_manual_sync_btn", use_container_width=True, help=f"Last synced: {st.session_state['last_sync_time']}"):
+with hdr_sync:
+    if st.button(
+        "🔄 Sync",
+        key="top_manual_sync_btn",
+        use_container_width=True,
+        help=f"Last synced: {st.session_state['last_sync_time']}",
+    ):
         clear_all_caches()
-        st.toast(f"⚡ Synced latest data ({st.session_state['last_sync_time']})!", icon="🔄")
+        st.toast(
+            f"⚡ Synced latest data ({st.session_state['last_sync_time']})!", icon="🔄"
+        )
         st.rerun()
+
+if hdr_logout is not None:
+    with hdr_logout:
+        u_label = st.session_state.get("user_email", "Signed In")
+        if st.button(
+            "🚪 Exit",
+            key="top_logout_btn",
+            use_container_width=True,
+            help=f"Signed in as: {u_label}",
+        ):
+            st.session_state["authenticated"] = False
+            st.session_state.pop("user_email", None)
+            st.session_state.pop("user_name", None)
+            if (
+                hasattr(st, "logout")
+                and hasattr(st, "user")
+                and getattr(st.user, "is_logged_in", False)
+            ):
+                st.logout()
+            st.rerun()
 
 # Run the zero-lag background database fingerprint monitor
 background_auto_sync_monitor()
@@ -2809,10 +4030,14 @@ background_auto_sync_monitor()
 bin_count = len(bin_df)
 bin_btn_label = f"🗑️ Bin ({bin_count})" if bin_count > 0 else "🗑️ Bin"
 
-cur_month_str = date.today().strftime("%Y-%m")
+cur_month_str = today_ist().strftime("%Y-%m")
 cur_upcoming_df = compute_upcoming_status(recurring_df, df, cur_month_str)
-unpaid_now_count = int((~cur_upcoming_df["Is_Paid"]).sum()) if not cur_upcoming_df.empty else 0
-upcoming_btn_label = f"⏰ Upcoming ({unpaid_now_count})" if unpaid_now_count > 0 else "⏰ Upcoming"
+unpaid_now_count = (
+    int((~cur_upcoming_df["Is_Paid"]).sum()) if not cur_upcoming_df.empty else 0
+)
+upcoming_btn_label = (
+    f"⏰ Upcoming ({unpaid_now_count})" if unpaid_now_count > 0 else "⏰ Upcoming"
+)
 
 if not df.empty:
     btn_c1, btn_c2, btn_c3, btn_c4, btn_c5, btn_c6 = st.columns(6)
@@ -2854,19 +4079,22 @@ else:
 # 8. MAIN DASHBOARD (INDIAN NUMBER FORMAT)
 # ==========================================
 if df.empty:
-    st.info("👋 Tap **➕ Add Entry**, **⏰ Upcoming**, or **📥 Import CSV/Excel** above to get started!")
+    st.info(
+        "👋 Tap **➕ Add Entry**, **⏰ Upcoming**, or **📥 Import CSV/Excel** above to get started!"
+    )
 else:
-    tab_monthly, tab_loans, tab_trends, tab_records = st.tabs([
-        "📅 Monthly", "🏦 Loans", "📈 Trends", "📋 History"
-    ])
+    tab_monthly, tab_loans, tab_trends, tab_records = st.tabs(
+        ["📅 Monthly", "🏦 Loans", "📈 Trends", "📋 History"]
+    )
 
     # ------------------------------------------
     # TAB 1: MONTH-WISE DASHBOARD
     # ------------------------------------------
     with tab_monthly:
-        month_options = df.sort_values("Month_Key", ascending=False)["Month_Label"].unique()
+        month_options = df.sort_values("Month_Key", ascending=False)[
+            "Month_Label"
+        ].unique()
 
-        # Inside col_select, .v-stack-trigger tells JS/CSS to stack this row 100% full-width on mobile
         col_select, col_chart_style = st.columns(2)
         with col_select:
             st.markdown('<span class="v-stack-trigger"></span>', unsafe_allow_html=True)
@@ -2875,22 +4103,37 @@ else:
             chart_style = button_selector(
                 "📊 Chart Style",
                 ["Donut", "Solid Pie", "Bar"],
-                key="monthly_chart_style"
+                key="monthly_chart_style",
             )
 
-        selected_month_key = df[df["Month_Label"] == selected_month]["Month_Key"].iloc[0]
+        selected_month_key = df[df["Month_Label"] == selected_month]["Month_Key"].iloc[
+            0
+        ]
 
-        month_upcoming_df = compute_upcoming_status(recurring_df, df, selected_month_key)
-        unpaid_month_bills = month_upcoming_df[~month_upcoming_df["Is_Paid"]] if not month_upcoming_df.empty else pd.DataFrame()
+        month_upcoming_df = compute_upcoming_status(
+            recurring_df, df, selected_month_key
+        )
+        unpaid_month_bills = (
+            month_upcoming_df[~month_upcoming_df["Is_Paid"]]
+            if not month_upcoming_df.empty
+            else pd.DataFrame()
+        )
 
         # VERTICAL REMINDER STACK: Reminder Banner on Top, Add/Pay Button on Bottom
         if not unpaid_month_bills.empty:
             urgent_bills = unpaid_month_bills[unpaid_month_bills["Urgency"] <= 2]
             est_unpaid_total = unpaid_month_bills["Expected_Amount"].sum()
             top_names = ", ".join(
-                [f"**{r['Sub-category']}** ({format_inr(r['Expected_Amount'])})" for _, r in unpaid_month_bills.head(4).iterrows()]
+                [
+                    f"**{r['Sub-category']}** ({format_inr(r['Expected_Amount'])})"
+                    for _, r in unpaid_month_bills.head(4).iterrows()
+                ]
             )
-            more_txt = f" + {len(unpaid_month_bills) - 4} more" if len(unpaid_month_bills) > 4 else ""
+            more_txt = (
+                f" + {len(unpaid_month_bills) - 4} more"
+                if len(unpaid_month_bills) > 4
+                else ""
+            )
 
             if not urgent_bills.empty:
                 st.warning(
@@ -2903,7 +4146,12 @@ else:
                     f"(Est. **{format_inr(est_unpaid_total)}**): {top_names}{more_txt}"
                 )
 
-            if st.button("➕ Add / Pay Scheduled", key="btn_banner_upcoming", type="primary", use_container_width=True):
+            if st.button(
+                "➕ Add / Pay Scheduled",
+                key="btn_banner_upcoming",
+                type="primary",
+                use_container_width=True,
+            ):
                 open_upcoming_bills_modal(selected_month_key)
 
         with st.expander("🏦 Filter by Bank & Family Member", expanded=False):
@@ -2912,19 +4160,19 @@ else:
                 selected_banks = st.multiselect(
                     "Select Bank(s)",
                     options=df["bank"].unique(),
-                    default=list(df["bank"].unique())
+                    default=list(df["bank"].unique()),
                 )
             with f_m_col:
                 selected_members = st.multiselect(
                     "Select Family Members",
                     options=df["member"].unique(),
-                    default=list(df["member"].unique())
+                    default=list(df["member"].unique()),
                 )
 
         m_df = df[
-            (df["Month_Label"] == selected_month) &
-            (df["bank"].isin(selected_banks)) &
-            (df["member"].isin(selected_members))
+            (df["Month_Label"] == selected_month)
+            & (df["bank"].isin(selected_banks))
+            & (df["member"].isin(selected_members))
         ]
 
         m_income = m_df[m_df["t_type"] == "Income"]["amount"].sum()
@@ -2945,19 +4193,25 @@ else:
             st.metric("Pending Loan", format_inr(m_pending_loan))
 
         if not shifted_sal_df.empty:
-            sal_dates = ", ".join(shifted_sal_df["t_date"].dt.strftime("%d %b").unique())
+            sal_dates = ", ".join(
+                shifted_sal_df["t_date"].dt.strftime("%d %b").unique()
+            )
             sal_sum = shifted_sal_df["amount"].sum()
             st.caption(
                 f"📅 **Salary Auto-Shift:** Includes **{format_inr(sal_sum)}** credited on **{sal_dates}**."
             )
 
         if m_self_transfer > 0:
-            st.caption(f"🔄 **Self-Transfers Excluded from Totals:** {format_inr(m_self_transfer)}")
+            st.caption(
+                f"🔄 **Self-Transfers Excluded from Totals:** {format_inr(m_self_transfer)}"
+            )
 
         # 2x2 ACTION BUTTON GRID (2 Buttons at Top, 2 Buttons at Bottom) with UI/UX Colors
         act_row1_c1, act_row1_c2 = st.columns(2)
         with act_row1_c1:
-            if st.button("⏰ Scheduled Bills", use_container_width=True, key="btn_up_m"):
+            if st.button(
+                "⏰ Scheduled Bills", use_container_width=True, key="btn_up_m"
+            ):
                 open_upcoming_bills_modal(selected_month_key)
         with act_row1_c2:
             if st.button("🔄 Copy Month", use_container_width=True, key="btn_copy_m"):
@@ -2972,7 +4226,9 @@ else:
                 open_delete_modal(m_df, scope_label=selected_month)
 
         st.divider()
-        st.caption("💡 **Tip:** Double-tap any chart (or tap **🔍 Enlarge**) to pop it open in Fullscreen with legends & tables!")
+        st.caption(
+            "💡 **Tip:** Double-tap any chart (or tap **🔍 Enlarge**) to pop it open in Fullscreen with legends & tables!"
+        )
 
         exp_m_df = m_df[m_df["t_type"] == "Expense"]
         inc_m_df = m_df[m_df["t_type"] == "Income"]
@@ -2984,55 +4240,110 @@ else:
         with ch1:
             st.markdown('<span class="v-stack-trigger"></span>', unsafe_allow_html=True)
             if not exp_m_df.empty and exp_m_df["amount"].sum() > 0:
-                cat_grp = exp_m_df.groupby("category", as_index=False)["amount"].sum().sort_values("amount", ascending=True)
-                cat_grp["INR_Label"] = cat_grp["amount"].apply(format_inr)
-                cat_tbl = cat_grp.sort_values("amount", ascending=False)[["category", "INR_Label"]].rename(
-                    columns={"category": "Category", "INR_Label": "Amount"}
+                cat_grp = (
+                    exp_m_df.groupby("category", as_index=False)["amount"]
+                    .sum()
+                    .sort_values("amount", ascending=True)
                 )
+                cat_grp["INR_Label"] = cat_grp["amount"].apply(format_inr)
+                cat_tbl = cat_grp.sort_values("amount", ascending=False)[
+                    ["category", "INR_Label"]
+                ].rename(columns={"category": "Category", "INR_Label": "Amount"})
                 if chart_style in ("Donut", "Solid Pie"):
                     fig_cat = px.pie(
-                        cat_grp, values="amount", names="category", hole=hole_size,
+                        cat_grp,
+                        values="amount",
+                        names="category",
+                        hole=hole_size,
                         custom_data=["INR_Label"],
-                        color_discrete_sequence=px.colors.qualitative.Pastel
+                        color_discrete_sequence=px.colors.qualitative.Pastel,
                     )
                     fig_cat.update_traces(
-                        textposition="inside", textinfo="percent+label",
-                        hovertemplate="<b>%{label}</b><br>%{customdata[0]} (%{percent})<extra></extra>"
+                        textposition="inside",
+                        textinfo="percent+label",
+                        hovertemplate="<b>%{label}</b><br>%{customdata[0]} (%{percent})<extra></extra>",
                     )
                 else:
                     fig_cat = px.bar(
-                        cat_grp, x="amount", y="category", color="category", orientation="h",
-                        text="INR_Label", labels={"category": "", "amount": "₹"}
+                        cat_grp,
+                        x="amount",
+                        y="category",
+                        color="category",
+                        orientation="h",
+                        text="INR_Label",
+                        labels={"category": "", "amount": "₹"},
                     )
-                    fig_cat.update_traces(hovertemplate="<b>%{y}</b>: %{text}<extra></extra>")
-                render_chart_with_popup("🥧 Category Expense", fig_cat, "m_cat", cat_tbl)
+                    fig_cat.update_traces(
+                        hovertemplate="<b>%{y}</b>: %{text}<extra></extra>"
+                    )
+                    style_readable_bar(
+                        fig_cat,
+                        orientation="h",
+                        max_val=cat_grp["amount"].max(),
+                        num_bars=len(cat_grp),
+                    )
+                render_chart_with_popup(
+                    "🥧 Category Expense", fig_cat, "m_cat", cat_tbl
+                )
             else:
                 st.info("No expenses for this month.")
 
         with ch2:
             if not exp_m_df.empty and exp_m_df["amount"].sum() > 0:
-                sub_grp = exp_m_df.groupby(["sub_category", "category"], as_index=False)["amount"].sum().sort_values("amount", ascending=True)
+                sub_grp = (
+                    exp_m_df.groupby(["sub_category", "category"], as_index=False)[
+                        "amount"
+                    ]
+                    .sum()
+                    .sort_values("amount", ascending=True)
+                )
                 sub_grp["INR_Label"] = sub_grp["amount"].apply(format_inr)
-                sub_tbl = sub_grp.sort_values("amount", ascending=False)[["sub_category", "category", "INR_Label"]].rename(
-                    columns={"sub_category": "Sub-category", "category": "Category", "INR_Label": "Amount"}
+                sub_tbl = sub_grp.sort_values("amount", ascending=False)[
+                    ["sub_category", "category", "INR_Label"]
+                ].rename(
+                    columns={
+                        "sub_category": "Sub-category",
+                        "category": "Category",
+                        "INR_Label": "Amount",
+                    }
                 )
                 if chart_style in ("Donut", "Solid Pie"):
                     fig_sub = px.pie(
-                        sub_grp, values="amount", names="sub_category", hole=hole_size,
+                        sub_grp,
+                        values="amount",
+                        names="sub_category",
+                        hole=hole_size,
                         custom_data=["INR_Label"],
-                        color_discrete_sequence=px.colors.qualitative.Safe
+                        color_discrete_sequence=px.colors.qualitative.Safe,
                     )
                     fig_sub.update_traces(
-                        textposition="inside", textinfo="percent+label",
-                        hovertemplate="<b>%{label}</b><br>%{customdata[0]} (%{percent})<extra></extra>"
+                        textposition="inside",
+                        textinfo="percent+label",
+                        hovertemplate="<b>%{label}</b><br>%{customdata[0]} (%{percent})<extra></extra>",
                     )
                 else:
+                    top_sub_bars = sub_grp.tail(10)
                     fig_sub = px.bar(
-                        sub_grp.tail(10), x="amount", y="sub_category", color="category", orientation="h",
-                        text="INR_Label", labels={"sub_category": "", "amount": "₹"}
+                        top_sub_bars,
+                        x="amount",
+                        y="sub_category",
+                        color="category",
+                        orientation="h",
+                        text="INR_Label",
+                        labels={"sub_category": "", "amount": "₹"},
                     )
-                    fig_sub.update_traces(hovertemplate="<b>%{y}</b>: %{text}<extra></extra>")
-                render_chart_with_popup("🎯 Sub-Category Expense", fig_sub, "m_sub", sub_tbl)
+                    fig_sub.update_traces(
+                        hovertemplate="<b>%{y}</b>: %{text}<extra></extra>"
+                    )
+                    style_readable_bar(
+                        fig_sub,
+                        orientation="h",
+                        max_val=top_sub_bars["amount"].max(),
+                        num_bars=len(top_sub_bars),
+                    )
+                render_chart_with_popup(
+                    "🎯 Sub-Category Expense", fig_sub, "m_sub", sub_tbl
+                )
             else:
                 st.info("No expenses for this month.")
 
@@ -3040,28 +4351,50 @@ else:
         with ch3:
             st.markdown('<span class="v-stack-trigger"></span>', unsafe_allow_html=True)
             if not inc_m_df.empty and inc_m_df["amount"].sum() > 0:
-                mem_inc_summary = inc_m_df.groupby("member", as_index=False)["amount"].sum()
-                mem_inc_summary["INR_Label"] = mem_inc_summary["amount"].apply(format_inr)
-                inc_tbl = mem_inc_summary.sort_values("amount", ascending=False)[["member", "INR_Label"]].rename(
-                    columns={"member": "Member", "INR_Label": "Income"}
+                mem_inc_summary = inc_m_df.groupby("member", as_index=False)[
+                    "amount"
+                ].sum()
+                mem_inc_summary["INR_Label"] = mem_inc_summary["amount"].apply(
+                    format_inr
                 )
+                inc_tbl = mem_inc_summary.sort_values("amount", ascending=False)[
+                    ["member", "INR_Label"]
+                ].rename(columns={"member": "Member", "INR_Label": "Income"})
                 if chart_style in ("Donut", "Solid Pie"):
                     fig_inc = px.pie(
-                        mem_inc_summary, values="amount", names="member", hole=hole_size,
+                        mem_inc_summary,
+                        values="amount",
+                        names="member",
+                        hole=hole_size,
                         custom_data=["INR_Label"],
-                        color_discrete_sequence=px.colors.qualitative.Set2
+                        color_discrete_sequence=px.colors.qualitative.Set2,
                     )
                     fig_inc.update_traces(
-                        textposition="inside", textinfo="percent+label",
-                        hovertemplate="<b>%{label}</b>: %{customdata[0]}<extra></extra>"
+                        textposition="inside",
+                        textinfo="percent+label",
+                        hovertemplate="<b>%{label}</b>: %{customdata[0]}<extra></extra>",
                     )
                 else:
                     fig_inc = px.bar(
-                        mem_inc_summary, x="member", y="amount", color="member",
-                        text="INR_Label", labels={"member": "", "amount": "₹"}
+                        mem_inc_summary,
+                        x="member",
+                        y="amount",
+                        color="member",
+                        text="INR_Label",
+                        labels={"member": "", "amount": "₹"},
                     )
-                    fig_inc.update_traces(hovertemplate="<b>%{x}</b>: %{text}<extra></extra>")
-                render_chart_with_popup("👨‍👩‍👦 Member Income", fig_inc, "m_inc", inc_tbl)
+                    fig_inc.update_traces(
+                        hovertemplate="<b>%{x}</b>: %{text}<extra></extra>"
+                    )
+                    style_readable_bar(
+                        fig_inc,
+                        orientation="v",
+                        max_val=mem_inc_summary["amount"].max(),
+                        num_bars=len(mem_inc_summary),
+                    )
+                render_chart_with_popup(
+                    "👨‍👩‍👦 Member Income", fig_inc, "m_inc", inc_tbl
+                )
             else:
                 st.info("No income for this month.")
 
@@ -3069,26 +4402,44 @@ else:
             if not exp_m_df.empty and exp_m_df["amount"].sum() > 0:
                 bank_grp = exp_m_df.groupby("bank", as_index=False)["amount"].sum()
                 bank_grp["INR_Label"] = bank_grp["amount"].apply(format_inr)
-                bank_tbl = bank_grp.sort_values("amount", ascending=False)[["bank", "INR_Label"]].rename(
-                    columns={"bank": "Bank", "INR_Label": "Expense"}
-                )
+                bank_tbl = bank_grp.sort_values("amount", ascending=False)[
+                    ["bank", "INR_Label"]
+                ].rename(columns={"bank": "Bank", "INR_Label": "Expense"})
                 if chart_style in ("Donut", "Solid Pie"):
                     fig_bank = px.pie(
-                        bank_grp, values="amount", names="bank", hole=hole_size,
+                        bank_grp,
+                        values="amount",
+                        names="bank",
+                        hole=hole_size,
                         custom_data=["INR_Label"],
-                        color_discrete_sequence=px.colors.qualitative.Bold
+                        color_discrete_sequence=px.colors.qualitative.Bold,
                     )
                     fig_bank.update_traces(
-                        textposition="inside", textinfo="percent+label",
-                        hovertemplate="<b>%{label}</b>: %{customdata[0]}<extra></extra>"
+                        textposition="inside",
+                        textinfo="percent+label",
+                        hovertemplate="<b>%{label}</b>: %{customdata[0]}<extra></extra>",
                     )
                 else:
                     fig_bank = px.bar(
-                        bank_grp, x="bank", y="amount", color="bank",
-                        text="INR_Label", labels={"bank": "", "amount": "₹"}
+                        bank_grp,
+                        x="bank",
+                        y="amount",
+                        color="bank",
+                        text="INR_Label",
+                        labels={"bank": "", "amount": "₹"},
                     )
-                    fig_bank.update_traces(hovertemplate="<b>%{x}</b>: %{text}<extra></extra>")
-                render_chart_with_popup("🏦 Expense by Bank", fig_bank, "m_bank", bank_tbl)
+                    fig_bank.update_traces(
+                        hovertemplate="<b>%{x}</b>: %{text}<extra></extra>"
+                    )
+                    style_readable_bar(
+                        fig_bank,
+                        orientation="v",
+                        max_val=bank_grp["amount"].max(),
+                        num_bars=len(bank_grp),
+                    )
+                render_chart_with_popup(
+                    "🏦 Expense by Bank", fig_bank, "m_bank", bank_tbl
+                )
             else:
                 st.info("No bank expenses.")
 
@@ -3098,9 +4449,11 @@ else:
             st.markdown('<span class="v-stack-trigger"></span>', unsafe_allow_html=True)
             st.markdown("**📂 Sub-Category Summary**")
             if not exp_m_df.empty:
-                sub_raw = exp_m_df.groupby(["sub_category", "category"], as_index=False).agg(
-                    Paid=("amount", "sum"), Loan=("pending_loan", "sum")
-                ).sort_values("Paid", ascending=False)
+                sub_raw = (
+                    exp_m_df.groupby(["sub_category", "category"], as_index=False)
+                    .agg(Paid=("amount", "sum"), Loan=("pending_loan", "sum"))
+                    .sort_values("Paid", ascending=False)
+                )
 
                 sub_table = sub_raw.copy()
                 sub_table["Paid"] = sub_table["Paid"].apply(format_inr)
@@ -3111,52 +4464,70 @@ else:
                 for _, sr in sub_raw.iterrows():
                     loan_badge = (
                         f'<span class="hist-pill" style="color:#f39c12;">🏦 Loan: {format_inr(sr["Loan"])}</span>'
-                        if float(sr["Loan"]) > 0 else ""
+                        if float(sr["Loan"]) > 0
+                        else ""
                     )
                     sub_cards.append(
                         f'<div class="hist-card">'
                         f'<div class="hist-card-top">'
                         f'<div class="hist-subcat">{html_lib.escape(str(sr["sub_category"]))}</div>'
                         f'<div class="hist-amt" style="color:#ff6b6b;">{format_inr(sr["Paid"])}</div>'
-                        f'</div>'
+                        f"</div>"
                         f'<div class="hist-badges">'
                         f'<span class="hist-pill">📂 {html_lib.escape(str(sr["category"]))}</span>'
-                        f'{loan_badge}'
-                        f'</div>'
-                        f'</div>'
+                        f"{loan_badge}"
+                        f"</div>"
+                        f"</div>"
                     )
                 render_responsive_table_or_cards(sub_table, sub_cards)
 
         with t_col2:
             st.markdown("**💳 Bank & Member Summary**")
             if not exp_m_df.empty:
-                mem_raw = exp_m_df.groupby(["bank", "member"], as_index=False).agg(
-                    Entries=("id", "count"), Total_Paid=("amount", "sum"), Total_Pending_Loan=("pending_loan", "sum")
-                ).sort_values("Total_Paid", ascending=False)
+                mem_raw = (
+                    exp_m_df.groupby(["bank", "member"], as_index=False)
+                    .agg(
+                        Entries=("id", "count"),
+                        Total_Paid=("amount", "sum"),
+                        Total_Pending_Loan=("pending_loan", "sum"),
+                    )
+                    .sort_values("Total_Paid", ascending=False)
+                )
 
                 mem_exp_table = mem_raw.copy()
-                mem_exp_table["Total_Paid"] = mem_exp_table["Total_Paid"].apply(format_inr)
-                mem_exp_table["Total_Pending_Loan"] = mem_exp_table["Total_Pending_Loan"].apply(format_inr)
-                mem_exp_table.columns = ["Bank", "Member", "Items", "Paid", "Pending Loan"]
+                mem_exp_table["Total_Paid"] = mem_exp_table["Total_Paid"].apply(
+                    format_inr
+                )
+                mem_exp_table["Total_Pending_Loan"] = mem_exp_table[
+                    "Total_Pending_Loan"
+                ].apply(format_inr)
+                mem_exp_table.columns = [
+                    "Bank",
+                    "Member",
+                    "Items",
+                    "Paid",
+                    "Pending Loan",
+                ]
 
                 mem_cards = []
                 for _, mr in mem_raw.iterrows():
                     m_loan_badge = (
                         f'<span class="hist-pill" style="color:#f39c12;">🏦 Loan: {format_inr(mr["Total_Pending_Loan"])}</span>'
-                        if float(mr["Total_Pending_Loan"]) > 0 else ""
+                        if float(mr["Total_Pending_Loan"]) > 0
+                        else ""
                     )
                     mem_cards.append(
                         f'<div class="hist-card">'
                         f'<div class="hist-card-top">'
                         f'<div class="hist-subcat">👨‍👩‍👦 {html_lib.escape(str(mr["member"]))}</div>'
                         f'<div class="hist-amt" style="color:#ff6b6b;">{format_inr(mr["Total_Paid"])}</div>'
-                        f'</div>'
+                        f"</div>"
                         f'<div class="hist-badges">'
                         f'<span class="hist-pill">🏦 {html_lib.escape(str(mr["bank"]))}</span>'
                         f'<span class="hist-pill">🧾 {int(mr["Entries"])} items</span>'
-                        f'{m_loan_badge}'
-                        f'</div>'
-                        f'</div>'
+                        f"{m_loan_badge}"
+                        f"</div>"
+                        f"</div>"
                     )
                 render_responsive_table_or_cards(mem_exp_table, mem_cards)
 
@@ -3164,27 +4535,44 @@ else:
     # TAB 2: DEDICATED PENDING LOAN TRACKER & CHARTS
     # ------------------------------------------
     with tab_loans:
-        # Inside l_top1, .v-stack-trigger stacks "Manage Loans" on TOP and "Loan Chart Style" on BOTTOM on mobile!
         l_top1, l_top2 = st.columns(2)
         with l_top1:
             st.markdown('<span class="v-stack-trigger"></span>', unsafe_allow_html=True)
-            st.markdown('<div style="font-size:0.86rem; font-weight:600; margin-bottom:4px;">🏦 Manage Loans</div>', unsafe_allow_html=True)
-            if st.button("🏦 Add / Update Month-Wise Loans", type="primary", use_container_width=True, key="btn_open_loan_tab"):
+            st.markdown(
+                '<div style="font-size:0.86rem; font-weight:600; margin-bottom:4px;">🏦 Manage Loans</div>',
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                "🏦 Add / Update Month-Wise Loans",
+                type="primary",
+                use_container_width=True,
+                key="btn_open_loan_tab",
+            ):
                 open_pending_loan_modal()
         with l_top2:
             loan_chart_style = button_selector(
                 "📊 Loan Chart Style",
                 ["Donut", "Solid Pie", "Bar"],
-                key="loan_chart_style_btn"
+                key="loan_chart_style_btn",
             )
 
-        loan_all_df = df[(df["pending_loan"] > 0) | (df["category"] == "Loans & EMIs") | (df["category"].isin(LOAN_CATEGORY_MAP.keys()))].copy()
+        loan_all_df = df[
+            (df["pending_loan"] > 0)
+            | (df["category"] == "Loans & EMIs")
+            | (df["category"].isin(LOAN_CATEGORY_MAP.keys()))
+        ].copy()
 
         if loan_all_df.empty:
-            st.info("👋 Tap **🏦 Add / Update Month-Wise Loans** above to load your Gold Loan, EDU Loan, Consumer Loan, and HDFC Loan balances!")
+            st.info(
+                "👋 Tap **🏦 Add / Update Month-Wise Loans** above to load your Gold Loan, EDU Loan, Consumer Loan, and HDFC Loan balances!"
+            )
         else:
-            loan_months = loan_all_df.sort_values("Month_Key", ascending=False)["Month_Label"].unique()
-            sel_loan_month = st.selectbox("🗓️ Select Loan Month", loan_months, key="loan_month_sel")
+            loan_months = loan_all_df.sort_values("Month_Key", ascending=False)[
+                "Month_Label"
+            ].unique()
+            sel_loan_month = st.selectbox(
+                "🗓️ Select Loan Month", loan_months, key="loan_month_sel"
+            )
 
             cur_loan_df = loan_all_df[loan_all_df["Month_Label"] == sel_loan_month]
             total_pending_till_date = cur_loan_df["pending_loan"].sum()
@@ -3197,150 +4585,287 @@ else:
 
             lk3, lk4 = st.columns(2)
             lk3.metric("Active Loan Accounts", f"{active_loan_count} Loans")
-            lk4.metric("In Words", number_to_indian_words(total_pending_till_date) or "₹0")
+            lk4.metric(
+                "In Words", number_to_indian_words(total_pending_till_date) or "₹0"
+            )
 
             l_act1, l_act2 = st.columns(2)
             with l_act1:
-                if st.button("✏️ Modify Loan Entry", use_container_width=True, key="btn_mod_loan"):
+                if st.button(
+                    "✏️ Modify Loan Entry", use_container_width=True, key="btn_mod_loan"
+                ):
                     open_modify_modal(cur_loan_df)
             with l_act2:
-                if st.button("🗑️ Delete Loan Entry", use_container_width=True, key="btn_del_loan"):
-                    open_delete_modal(cur_loan_df, scope_label=f"Loans in {sel_loan_month}")
+                if st.button(
+                    "🗑️ Delete Loan Entry", use_container_width=True, key="btn_del_loan"
+                ):
+                    open_delete_modal(
+                        cur_loan_df, scope_label=f"Loans in {sel_loan_month}"
+                    )
 
             st.divider()
-            st.caption("💡 **Tip:** Double-tap any loan chart (or tap **🔍 Enlarge**) to pop it open in Fullscreen!")
+            st.caption(
+                "💡 **Tip:** Double-tap any loan chart (or tap **🔍 Enlarge**) to pop it open in Fullscreen!"
+            )
 
             loan_hole = 0.45 if loan_chart_style == "Donut" else 0.0
             pending_only_df = cur_loan_df[cur_loan_df["pending_loan"] > 0]
-            chart_source_df = pending_only_df if not pending_only_df.empty else cur_loan_df
+            chart_source_df = (
+                pending_only_df if not pending_only_df.empty else cur_loan_df
+            )
             val_col = "pending_loan" if not pending_only_df.empty else "amount"
             val_title = "Pending Loan" if val_col == "pending_loan" else "EMI Paid"
 
             l_ch1, l_ch2 = st.columns(2)
             with l_ch1:
-                st.markdown('<span class="v-stack-trigger"></span>', unsafe_allow_html=True)
-                l_cat_grp = chart_source_df.groupby("Loan_Category", as_index=False)[val_col].sum().sort_values(val_col, ascending=True)
+                st.markdown(
+                    '<span class="v-stack-trigger"></span>', unsafe_allow_html=True
+                )
+                l_cat_grp = (
+                    chart_source_df.groupby("Loan_Category", as_index=False)[val_col]
+                    .sum()
+                    .sort_values(val_col, ascending=True)
+                )
                 l_cat_grp["INR_Label"] = l_cat_grp[val_col].apply(format_inr)
-                lcat_tbl = l_cat_grp.sort_values(val_col, ascending=False)[["Loan_Category", "INR_Label"]].rename(
+                lcat_tbl = l_cat_grp.sort_values(val_col, ascending=False)[
+                    ["Loan_Category", "INR_Label"]
+                ].rename(
                     columns={"Loan_Category": "Loan Category", "INR_Label": val_title}
                 )
                 if loan_chart_style in ("Donut", "Solid Pie"):
                     fig_lcat = px.pie(
-                        l_cat_grp, values=val_col, names="Loan_Category", hole=loan_hole,
+                        l_cat_grp,
+                        values=val_col,
+                        names="Loan_Category",
+                        hole=loan_hole,
                         custom_data=["INR_Label"],
-                        color_discrete_sequence=px.colors.qualitative.Bold
+                        color_discrete_sequence=px.colors.qualitative.Bold,
                     )
                     fig_lcat.update_traces(
-                        textposition="inside", textinfo="percent+label",
-                        hovertemplate="<b>%{label}</b><br>%{customdata[0]} (%{percent})<extra></extra>"
+                        textposition="inside",
+                        textinfo="percent+label",
+                        hovertemplate="<b>%{label}</b><br>%{customdata[0]} (%{percent})<extra></extra>",
                     )
                 else:
                     fig_lcat = px.bar(
-                        l_cat_grp, x=val_col, y="Loan_Category", color="Loan_Category", orientation="h",
-                        text="INR_Label", labels={"Loan_Category": "", val_col: "₹"}
+                        l_cat_grp,
+                        x=val_col,
+                        y="Loan_Category",
+                        color="Loan_Category",
+                        orientation="h",
+                        text="INR_Label",
+                        labels={"Loan_Category": "", val_col: "₹"},
                     )
-                    fig_lcat.update_traces(hovertemplate="<b>%{y}</b>: %{text}<extra></extra>")
-                render_chart_with_popup(f"📂 Category {val_title}", fig_lcat, "l_cat", lcat_tbl)
+                    fig_lcat.update_traces(
+                        hovertemplate="<b>%{y}</b>: %{text}<extra></extra>"
+                    )
+                    style_readable_bar(
+                        fig_lcat,
+                        orientation="h",
+                        max_val=l_cat_grp[val_col].max(),
+                        num_bars=len(l_cat_grp),
+                    )
+                render_chart_with_popup(
+                    f"📂 Category {val_title}", fig_lcat, "l_cat", lcat_tbl
+                )
 
             with l_ch2:
-                l_sub_grp = chart_source_df.groupby(["sub_category", "Loan_Category"], as_index=False)[val_col].sum().sort_values(val_col, ascending=True)
+                l_sub_grp = (
+                    chart_source_df.groupby(
+                        ["sub_category", "Loan_Category"], as_index=False
+                    )[val_col]
+                    .sum()
+                    .sort_values(val_col, ascending=True)
+                )
                 l_sub_grp["INR_Label"] = l_sub_grp[val_col].apply(format_inr)
-                lsub_tbl = l_sub_grp.sort_values(val_col, ascending=False)[["sub_category", "Loan_Category", "INR_Label"]].rename(
-                    columns={"sub_category": "Loan Name", "Loan_Category": "Category", "INR_Label": val_title}
+                lsub_tbl = l_sub_grp.sort_values(val_col, ascending=False)[
+                    ["sub_category", "Loan_Category", "INR_Label"]
+                ].rename(
+                    columns={
+                        "sub_category": "Loan Name",
+                        "Loan_Category": "Category",
+                        "INR_Label": val_title,
+                    }
                 )
                 if loan_chart_style in ("Donut", "Solid Pie"):
                     fig_lsub = px.pie(
-                        l_sub_grp, values=val_col, names="sub_category", hole=loan_hole,
+                        l_sub_grp,
+                        values=val_col,
+                        names="sub_category",
+                        hole=loan_hole,
                         custom_data=["INR_Label"],
-                        color_discrete_sequence=px.colors.qualitative.Vivid
+                        color_discrete_sequence=px.colors.qualitative.Vivid,
                     )
                     fig_lsub.update_traces(
-                        textposition="inside", textinfo="percent+label",
-                        hovertemplate="<b>%{label}</b><br>%{customdata[0]} (%{percent})<extra></extra>"
+                        textposition="inside",
+                        textinfo="percent+label",
+                        hovertemplate="<b>%{label}</b><br>%{customdata[0]} (%{percent})<extra></extra>",
                     )
                 else:
                     fig_lsub = px.bar(
-                        l_sub_grp, x=val_col, y="sub_category", color="Loan_Category", orientation="h",
-                        text="INR_Label", labels={"sub_category": "", val_col: "₹"}
+                        l_sub_grp,
+                        x=val_col,
+                        y="sub_category",
+                        color="Loan_Category",
+                        orientation="h",
+                        text="INR_Label",
+                        labels={"sub_category": "", val_col: "₹"},
                     )
-                    fig_lsub.update_traces(hovertemplate="<b>%{y}</b>: %{text}<extra></extra>")
-                render_chart_with_popup(f"🎯 Sub-Category {val_title}", fig_lsub, "l_sub", lsub_tbl)
+                    fig_lsub.update_traces(
+                        hovertemplate="<b>%{y}</b>: %{text}<extra></extra>"
+                    )
+                    style_readable_bar(
+                        fig_lsub,
+                        orientation="h",
+                        max_val=l_sub_grp[val_col].max(),
+                        num_bars=len(l_sub_grp),
+                    )
+                render_chart_with_popup(
+                    f"🎯 Sub-Category {val_title}", fig_lsub, "l_sub", lsub_tbl
+                )
 
             l_ch3, l_ch4 = st.columns(2)
             with l_ch3:
-                st.markdown('<span class="v-stack-trigger"></span>', unsafe_allow_html=True)
-                l_mem_grp = chart_source_df.groupby("member", as_index=False)[val_col].sum()
-                l_mem_grp["INR_Label"] = l_mem_grp[val_col].apply(format_inr)
-                lmem_tbl = l_mem_grp.sort_values(val_col, ascending=False)[["member", "INR_Label"]].rename(
-                    columns={"member": "Member", "INR_Label": val_title}
+                st.markdown(
+                    '<span class="v-stack-trigger"></span>', unsafe_allow_html=True
                 )
+                l_mem_grp = chart_source_df.groupby("member", as_index=False)[
+                    val_col
+                ].sum()
+                l_mem_grp["INR_Label"] = l_mem_grp[val_col].apply(format_inr)
+                lmem_tbl = l_mem_grp.sort_values(val_col, ascending=False)[
+                    ["member", "INR_Label"]
+                ].rename(columns={"member": "Member", "INR_Label": val_title})
                 if loan_chart_style in ("Donut", "Solid Pie"):
                     fig_lmem = px.pie(
-                        l_mem_grp, values=val_col, names="member", hole=loan_hole,
+                        l_mem_grp,
+                        values=val_col,
+                        names="member",
+                        hole=loan_hole,
                         custom_data=["INR_Label"],
-                        color_discrete_sequence=px.colors.qualitative.Set2
+                        color_discrete_sequence=px.colors.qualitative.Set2,
                     )
                     fig_lmem.update_traces(
-                        textposition="inside", textinfo="percent+label",
-                        hovertemplate="<b>%{label}</b>: %{customdata[0]}<extra></extra>"
+                        textposition="inside",
+                        textinfo="percent+label",
+                        hovertemplate="<b>%{label}</b>: %{customdata[0]}<extra></extra>",
                     )
                 else:
                     fig_lmem = px.bar(
-                        l_mem_grp, x="member", y=val_col, color="member",
-                        text="INR_Label", labels={"member": "", val_col: "₹"}
+                        l_mem_grp,
+                        x="member",
+                        y=val_col,
+                        color="member",
+                        text="INR_Label",
+                        labels={"member": "", val_col: "₹"},
                     )
-                    fig_lmem.update_traces(hovertemplate="<b>%{x}</b>: %{text}<extra></extra>")
-                render_chart_with_popup(f"👨‍👩‍👦 Member {val_title}", fig_lmem, "l_mem", lmem_tbl)
+                    fig_lmem.update_traces(
+                        hovertemplate="<b>%{x}</b>: %{text}<extra></extra>"
+                    )
+                    style_readable_bar(
+                        fig_lmem,
+                        orientation="v",
+                        max_val=l_mem_grp[val_col].max(),
+                        num_bars=len(l_mem_grp),
+                    )
+                render_chart_with_popup(
+                    f"👨‍👩‍👦 Member {val_title}", fig_lmem, "l_mem", lmem_tbl
+                )
 
             with l_ch4:
-                mom_loan = loan_all_df.groupby("Month_Key", as_index=False).agg(
-                    Pending=("pending_loan", "sum"),
-                    EMI=("amount", "sum")
-                ).sort_values("Month_Key")
+                mom_loan = (
+                    loan_all_df.groupby("Month_Key", as_index=False)
+                    .agg(Pending=("pending_loan", "sum"), EMI=("amount", "sum"))
+                    .sort_values("Month_Key")
+                )
                 trend_col = "Pending" if mom_loan["Pending"].sum() > 0 else "EMI"
                 mom_loan["INR_Label"] = mom_loan[trend_col].apply(format_inr)
                 ltrend_tbl = mom_loan[["Month_Key", "INR_Label"]].rename(
                     columns={"Month_Key": "Month", "INR_Label": trend_col}
                 )
                 fig_loan_trend = px.bar(
-                    mom_loan, x="Month_Key", y=trend_col, text="INR_Label",
+                    mom_loan,
+                    x="Month_Key",
+                    y=trend_col,
+                    text="INR_Label",
                     color_discrete_sequence=["#e67e22"],
-                    labels={"Month_Key": "", trend_col: "₹"}
+                    labels={"Month_Key": "", trend_col: "₹"},
                 )
-                fig_loan_trend.update_traces(hovertemplate="<b>%{x}</b>: %{text}<extra></extra>")
-                render_chart_with_popup("📉 Month-Wise Loan Trend", fig_loan_trend, "l_trend", ltrend_tbl)
+                fig_loan_trend.update_traces(
+                    hovertemplate="<b>%{x}</b>: %{text}<extra></extra>"
+                )
+                style_readable_bar(
+                    fig_loan_trend,
+                    orientation="v",
+                    max_val=mom_loan[trend_col].max(),
+                    num_bars=len(mom_loan),
+                )
+                render_chart_with_popup(
+                    "📉 Month-Wise Loan Trend", fig_loan_trend, "l_trend", ltrend_tbl
+                )
 
             st.markdown("**📋 Itemized Loans & EMIs**")
-            loan_list_disp = cur_loan_df[["Loan_Category", "sub_category", "bank", "member", "amount", "pending_loan", "details"]].copy()
-            loan_list_disp["amount"] = loan_list_disp["amount"].apply(lambda x: format_inr(x, 2))
-            loan_list_disp["pending_loan"] = loan_list_disp["pending_loan"].apply(lambda x: format_inr(x, 2))
-            loan_list_disp.columns = ["Loan Category", "Loan Sub-category", "Bank", "Member", "EMI Paid", "Pending Balance", "Details"]
+            loan_list_disp = cur_loan_df[
+                [
+                    "Loan_Category",
+                    "sub_category",
+                    "bank",
+                    "member",
+                    "amount",
+                    "pending_loan",
+                    "details",
+                ]
+            ].copy()
+            loan_list_disp["amount"] = loan_list_disp["amount"].apply(
+                lambda x: format_inr(x, 2)
+            )
+            loan_list_disp["pending_loan"] = loan_list_disp["pending_loan"].apply(
+                lambda x: format_inr(x, 2)
+            )
+            loan_list_disp.columns = [
+                "Loan Category",
+                "Loan Sub-category",
+                "Bank",
+                "Member",
+                "EMI Paid",
+                "Pending Balance",
+                "Details",
+            ]
 
             loan_cards = []
             for _, lr in cur_loan_df.iterrows():
                 emi_v = float(lr["amount"])
                 pend_v = float(lr["pending_loan"])
-                right_str = f"Pending: {format_inr(pend_v)}" if pend_v > 0 else f"EMI: {format_inr(emi_v)}"
+                right_str = (
+                    f"Pending: {format_inr(pend_v)}"
+                    if pend_v > 0
+                    else f"EMI: {format_inr(emi_v)}"
+                )
                 emi_pill = (
                     f'<span class="hist-pill" style="color:#2ecc71;">💸 EMI Paid: {format_inr(emi_v)}</span>'
-                    if emi_v > 0 and pend_v > 0 else ""
+                    if emi_v > 0 and pend_v > 0
+                    else ""
                 )
                 det_l_esc = html_lib.escape(str(lr["details"] or ""))
-                det_l_html = f'<div class="hist-details">📝 {det_l_esc}</div>' if det_l_esc else ""
+                det_l_html = (
+                    f'<div class="hist-details">📝 {det_l_esc}</div>'
+                    if det_l_esc
+                    else ""
+                )
                 loan_cards.append(
                     f'<div class="hist-card">'
                     f'<div class="hist-card-top">'
                     f'<div class="hist-subcat">#{int(lr["id"])} • {html_lib.escape(str(lr["sub_category"]))}</div>'
                     f'<div class="hist-amt" style="color:#f39c12;">{right_str}</div>'
-                    f'</div>'
+                    f"</div>"
                     f'<div class="hist-badges">'
                     f'<span class="hist-pill">📂 {html_lib.escape(str(lr["Loan_Category"]))}</span>'
                     f'<span class="hist-pill">🏦 {html_lib.escape(str(lr["bank"]))}</span>'
                     f'<span class="hist-pill">👨‍👩‍👦 {html_lib.escape(str(lr["member"]))}</span>'
-                    f'{emi_pill}'
-                    f'</div>'
-                    f'{det_l_html}'
-                    f'</div>'
+                    f"{emi_pill}"
+                    f"</div>"
+                    f"{det_l_html}"
+                    f"</div>"
                 )
             render_responsive_table_or_cards(loan_list_disp, loan_cards)
 
@@ -3353,7 +4878,9 @@ else:
         all_bal = all_inc - all_exp
 
         latest_month_key = df["Month_Key"].max()
-        latest_pending_loan = df[df["Month_Key"] == latest_month_key]["pending_loan"].sum()
+        latest_pending_loan = df[df["Month_Key"] == latest_month_key][
+            "pending_loan"
+        ].sum()
 
         a1, a2 = st.columns(2)
         a1.metric("All-Time Income", format_inr(all_inc))
@@ -3363,39 +4890,93 @@ else:
         with a3:
             render_net_savings_metric("All-Time Net Savings", all_bal)
         with a4:
-            st.metric(f"Pending Loan ({latest_month_key})", format_inr(latest_pending_loan))
+            st.metric(
+                f"Pending Loan ({latest_month_key})", format_inr(latest_pending_loan)
+            )
 
         st.divider()
-        st.caption("💡 **Tip:** Double-tap any trend chart (or tap **🔍 Enlarge**) to pop it open in Fullscreen!")
+        st.caption(
+            "💡 **Tip:** Double-tap any trend chart (or tap **🔍 Enlarge**) to pop it open in Fullscreen!"
+        )
 
         active_df = df[df["t_type"].isin(["Income", "Expense"])]
-        mom_df = active_df.groupby(["Month_Key", "t_type"], as_index=False)["amount"].sum().sort_values("Month_Key")
+        mom_df = (
+            active_df.groupby(["Month_Key", "t_type"], as_index=False)["amount"]
+            .sum()
+            .sort_values("Month_Key")
+        )
         mom_df["INR_Label"] = mom_df["amount"].apply(format_inr)
         mom_tbl = mom_df[["Month_Key", "t_type", "INR_Label"]].rename(
             columns={"Month_Key": "Month", "t_type": "Type", "INR_Label": "Amount"}
         )
         fig_mom = px.bar(
-            mom_df, x="Month_Key", y="amount", color="t_type", barmode="group", text="INR_Label",
+            mom_df,
+            x="Month_Key",
+            y="amount",
+            color="t_type",
+            barmode="group",
+            text="INR_Label",
             color_discrete_map={"Income": "#2ecc71", "Expense": "#e74c3c"},
-            labels={"Month_Key": "", "amount": "₹", "t_type": ""}
+            labels={"Month_Key": "", "amount": "₹", "t_type": ""},
         )
-        fig_mom.update_traces(hovertemplate="<b>%{x}</b><br>%{fullData.name}: %{text}<extra></extra>")
-        render_chart_with_popup("📊 Monthly Income vs. Expense", fig_mom, "t_mom", mom_tbl, show_inline_legend=True)
+        fig_mom.update_traces(
+            hovertemplate="<b>%{x}</b><br>%{fullData.name}: %{text}<extra></extra>"
+        )
+        style_readable_bar(
+            fig_mom,
+            orientation="v",
+            max_val=mom_df["amount"].max(),
+            num_bars=mom_df["Month_Key"].nunique(),
+        )
+        render_chart_with_popup(
+            "📊 Monthly Income vs. Expense",
+            fig_mom,
+            "t_mom",
+            mom_tbl,
+            show_inline_legend=True,
+        )
 
         all_exp_df = df[df["t_type"] == "Expense"]
         if not all_exp_df.empty:
-            mom_sub = all_exp_df.groupby(["Month_Key", "sub_category"], as_index=False)["amount"].sum().sort_values("Month_Key")
+            mom_sub = (
+                all_exp_df.groupby(["Month_Key", "sub_category"], as_index=False)[
+                    "amount"
+                ]
+                .sum()
+                .sort_values("Month_Key")
+            )
             mom_sub["INR_Label"] = mom_sub["amount"].apply(format_inr)
-            mom_sub_tbl = mom_sub.sort_values(["Month_Key", "amount"], ascending=[False, False])[["Month_Key", "sub_category", "INR_Label"]].rename(
-                columns={"Month_Key": "Month", "sub_category": "Sub-category", "INR_Label": "Amount"}
+            mom_sub_tbl = mom_sub.sort_values(
+                ["Month_Key", "amount"], ascending=[False, False]
+            )[["Month_Key", "sub_category", "INR_Label"]].rename(
+                columns={
+                    "Month_Key": "Month",
+                    "sub_category": "Sub-category",
+                    "INR_Label": "Amount",
+                }
             )
+            month_totals = mom_sub.groupby("Month_Key")["amount"].sum()
             fig_mom_sub = px.bar(
-                mom_sub, x="Month_Key", y="amount", color="sub_category",
-                custom_data=["INR_Label"],
-                labels={"Month_Key": "", "amount": "₹", "sub_category": ""}
+                mom_sub,
+                x="Month_Key",
+                y="amount",
+                color="sub_category",
+                custom_data=["INR_Label", "sub_category"],
+                labels={"Month_Key": "", "amount": "₹", "sub_category": ""},
             )
-            fig_mom_sub.update_traces(hovertemplate="<b>%{x}</b>: %{customdata[0]}<extra></extra>")
-            render_chart_with_popup("📈 Sub-Category Spending Trend", fig_mom_sub, "t_sub", mom_sub_tbl)
+            fig_mom_sub.update_traces(
+                hovertemplate="<b>%{x}</b> • %{customdata[1]}: %{customdata[0]}<extra></extra>"
+            )
+            style_readable_bar(
+                fig_mom_sub,
+                orientation="v",
+                max_val=month_totals.max() if not month_totals.empty else 0.0,
+                num_bars=mom_sub["Month_Key"].nunique(),
+                show_text=False,
+            )
+            render_chart_with_popup(
+                "📈 Sub-Category Spending Trend", fig_mom_sub, "t_sub", mom_sub_tbl
+            )
 
     # ------------------------------------------
     # TAB 4: COMPLETE HISTORY WITH RICH MULTI-FILTERS & MOBILE CARDS
@@ -3407,7 +4988,9 @@ else:
             if st.button("📥 Import CSV", use_container_width=True, key="btn_imp_all"):
                 open_excel_import_modal()
         with h_r1_c2:
-            if st.button("✏️ Modify Entry", use_container_width=True, key="btn_mod_all"):
+            if st.button(
+                "✏️ Modify Entry", use_container_width=True, key="btn_mod_all"
+            ):
                 open_modify_modal(df)
 
         h_r2_c1, h_r2_c2 = st.columns(2)
@@ -3421,12 +5004,14 @@ else:
         st.markdown("##### 🔍 Filter Complete History")
         hf_r1_c1, hf_r1_c2 = st.columns(2)
         with hf_r1_c1:
-            all_budget_months = list(df.sort_values("Month_Key", ascending=False)["Month_Key"].unique())
+            all_budget_months = list(
+                df.sort_values("Month_Key", ascending=False)["Month_Key"].unique()
+            )
             hist_months = st.multiselect(
                 "🗓️ Budget Month",
                 options=all_budget_months,
                 default=all_budget_months,
-                key="hist_f_month"
+                key="hist_f_month",
             )
         with hf_r1_c2:
             all_banks = list(df["bank"].unique())
@@ -3434,7 +5019,7 @@ else:
                 "🏦 Bank Account",
                 options=all_banks,
                 default=all_banks,
-                key="hist_f_bank"
+                key="hist_f_bank",
             )
 
         hf_r2_c1, hf_r2_c2 = st.columns(2)
@@ -3444,25 +5029,26 @@ else:
                 "🔄 Transaction Type",
                 options=all_types,
                 default=all_types,
-                key="hist_f_type"
+                key="hist_f_type",
             )
         with hf_r2_c2:
-            avail_cats = sorted(list(df[df["t_type"].isin(hist_types)]["category"].unique()))
+            avail_cats = sorted(
+                list(df[df["t_type"].isin(hist_types)]["category"].unique())
+            )
             hist_cats = st.multiselect(
-                "📂 Category",
-                options=avail_cats,
-                default=avail_cats,
-                key="hist_f_cat"
+                "📂 Category", options=avail_cats, default=avail_cats, key="hist_f_cat"
             )
 
         hf_r3_c1, hf_r3_c2 = st.columns(2)
         with hf_r3_c1:
-            avail_subs = sorted(list(df[df["category"].isin(hist_cats)]["sub_category"].unique()))
+            avail_subs = sorted(
+                list(df[df["category"].isin(hist_cats)]["sub_category"].unique())
+            )
             hist_subs = st.multiselect(
                 "🎯 Sub-category",
                 options=avail_subs,
                 default=avail_subs,
-                key="hist_f_sub"
+                key="hist_f_sub",
             )
         with hf_r3_c2:
             all_mems = list(df["member"].unique())
@@ -3470,28 +5056,28 @@ else:
                 "👨‍👩‍👦 Family Member",
                 options=all_mems,
                 default=all_mems,
-                key="hist_f_mem"
+                key="hist_f_mem",
             )
 
         search_query = st.text_input(
             "🔎 Search in Details / Narration (Optional)",
-            placeholder="Type any keyword (e.g., Manappuram, TCS, Zomato, Cred)..."
+            placeholder="Type any keyword (e.g., Manappuram, TCS, Zomato, Cred)...",
         )
 
         hist_df = df[
-            (df["Month_Key"].isin(hist_months)) &
-            (df["bank"].isin(hist_banks)) &
-            (df["t_type"].isin(hist_types)) &
-            (df["category"].isin(hist_cats)) &
-            (df["sub_category"].isin(hist_subs)) &
-            (df["member"].isin(hist_mems))
+            (df["Month_Key"].isin(hist_months))
+            & (df["bank"].isin(hist_banks))
+            & (df["t_type"].isin(hist_types))
+            & (df["category"].isin(hist_cats))
+            & (df["sub_category"].isin(hist_subs))
+            & (df["member"].isin(hist_mems))
         ].copy()
 
         if search_query.strip():
             q = search_query.strip().lower()
             hist_df = hist_df[
-                hist_df["details"].fillna("").str.lower().str.contains(q) |
-                hist_df["sub_category"].fillna("").str.lower().str.contains(q)
+                hist_df["details"].fillna("").str.lower().str.contains(q)
+                | hist_df["sub_category"].fillna("").str.lower().str.contains(q)
             ]
 
         f_inc = hist_df[hist_df["t_type"] == "Income"]["amount"].sum()
@@ -3505,16 +5091,55 @@ else:
             f"Filtered Pending Loan: **{format_inr(f_loan)}**"
         )
 
-        disp_df = hist_df[["id", "t_date", "Month_Key", "bank", "t_type", "sub_category", "member", "amount", "pending_loan", "category", "details"]].copy()
+        disp_df = hist_df[
+            [
+                "id",
+                "t_date",
+                "Month_Key",
+                "bank",
+                "t_type",
+                "sub_category",
+                "member",
+                "amount",
+                "pending_loan",
+                "category",
+                "details",
+            ]
+        ].copy()
         disp_df["t_date"] = disp_df["t_date"].dt.strftime("%Y-%m-%d")
         disp_df["amount"] = disp_df["amount"].apply(lambda x: format_inr(x, 2))
-        disp_df["pending_loan"] = disp_df["pending_loan"].apply(lambda x: format_inr(x, 2))
+        disp_df["pending_loan"] = disp_df["pending_loan"].apply(
+            lambda x: format_inr(x, 2)
+        )
         disp_df.columns = [
-            "ID", "Actual Date", "Budget Month", "Bank", "Type", "Sub-category", "Member",
-            "Amount (₹)", "Pending Loan (₹)", "Category", "Details"
+            "ID",
+            "Actual Date",
+            "Budget Month",
+            "Bank",
+            "Type",
+            "Sub-category",
+            "Member",
+            "Amount (₹)",
+            "Pending Loan (₹)",
+            "Category",
+            "Details",
         ]
 
-        raw_csv_df = hist_df[["id", "t_date", "Month_Key", "bank", "t_type", "sub_category", "member", "amount", "pending_loan", "category", "details"]].copy()
+        raw_csv_df = hist_df[
+            [
+                "id",
+                "t_date",
+                "Month_Key",
+                "bank",
+                "t_type",
+                "sub_category",
+                "member",
+                "amount",
+                "pending_loan",
+                "category",
+                "details",
+            ]
+        ].copy()
         raw_csv_df["t_date"] = raw_csv_df["t_date"].dt.strftime("%Y-%m-%d")
         raw_csv_df.columns = disp_df.columns
         csv_bytes = raw_csv_df.to_csv(index=False).encode("utf-8")
@@ -3522,9 +5147,9 @@ else:
         st.download_button(
             label=f"📥 Download Filtered History ({len(hist_df)} rows) as CSV",
             data=csv_bytes,
-            file_name=f"das_family_finances_{date.today()}.csv",
+            file_name=f"das_family_finances_{today_ist()}.csv",
             mime="text/csv",
-            use_container_width=True
+            use_container_width=True,
         )
 
         # Build Mobile Cards for History (Desktop gets disp_df table automatically)
@@ -3535,8 +5160,8 @@ else:
         if len(hist_df) > MAX_MOBILE_CARDS:
             hist_cards.append(
                 f'<div style="font-size:0.75rem; color:#9ca3af; margin-bottom:8px; text-align:center;">'
-                f'📱 Showing latest {MAX_MOBILE_CARDS} of {len(hist_df)} filtered records (Use filters above to narrow down)'
-                f'</div>'
+                f"📱 Showing latest {MAX_MOBILE_CARDS} of {len(hist_df)} filtered records (Use filters above to narrow down)"
+                f"</div>"
             )
 
         for _, r in mobile_slice.iterrows():
@@ -3562,7 +5187,8 @@ else:
 
             loan_pill_html = (
                 f'<span class="hist-pill" style="color:#f39c12;">🏦 Loan: {format_inr(loan_val, 0)}</span>'
-                if loan_val > 0 and amt_val > 0 else ""
+                if loan_val > 0 and amt_val > 0
+                else ""
             )
 
             sub_esc = html_lib.escape(str(r["sub_category"]))
@@ -3571,38 +5197,45 @@ else:
             bnk_esc = html_lib.escape(str(r["bank"]))
             det_esc = html_lib.escape(str(r["details"] or ""))
             date_str = r["t_date"].strftime("%d %b %Y")
-            det_html = f'<div class="hist-details">📝 {det_esc}</div>' if det_esc else ""
+            det_html = (
+                f'<div class="hist-details">📝 {det_esc}</div>' if det_esc else ""
+            )
 
             card_item = (
                 f'<div class="hist-card">'
                 f'<div class="hist-card-top">'
                 f'<div class="hist-subcat">#{int(r["id"])} • {sub_esc}</div>'
                 f'<div class="hist-amt" style="color:{amt_color};">{primary_amt_str}</div>'
-                f'</div>'
+                f"</div>"
                 f'<div class="hist-badges">'
                 f'<span class="hist-pill">📅 {date_str}</span>'
                 f'<span class="hist-pill">🏦 {bnk_esc}</span>'
                 f'<span class="hist-pill">👨‍👩‍👦 {mem_esc}</span>'
                 f'<span class="hist-pill">📂 {cat_esc}</span>'
-                f'{loan_pill_html}'
-                f'</div>'
-                f'{det_html}'
-                f'</div>'
+                f"{loan_pill_html}"
+                f"</div>"
+                f"{det_html}"
+                f"</div>"
             )
             hist_cards.append(card_item)
 
         render_responsive_table_or_cards(disp_df, hist_cards)
 
-# Footer status bar with Auto-Sync toggle & Last Synced timestamp
+# Footer status bar with Auto-Sync toggle & IST Last Synced timestamp
 f_col1, f_col2 = st.columns([3, 1])
 with f_col1:
+    signed_user_badge = (
+        f"👤 `{st.session_state['user_email']}` | "
+        if st.session_state.get("user_email")
+        else ""
+    )
     st.caption(
-        f"📱 Mobile App Ready | 🔄 Last Synced: **{st.session_state['last_sync_time']}** | "
+        f"📱 Mobile App Ready | {signed_user_badge}🔄 Last Synced: **{st.session_state['last_sync_time']}** | "
         + ("🟢 Cloud PostgreSQL" if USE_POSTGRES else "🟡 Local SQLite (`expenses.db`)")
     )
 with f_col2:
     st.session_state["auto_sync_enabled"] = st.checkbox(
         "⚡ Auto-Sync (60s)",
         value=st.session_state.get("auto_sync_enabled", True),
-        help="Silently checks for new database changes every 60s and only refreshes if data actually changed."
+        help="Silently checks for new database changes every 60s and only refreshes if data actually changed.",
     )
